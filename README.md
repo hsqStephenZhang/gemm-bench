@@ -121,7 +121,7 @@ enabled = false
 trials = 64
 ```
 
-`--auto-tune` and `--no-auto-tune` override the subconfiguration for all three operators. `--trials` alone does not enable tuning; TVM must be selected to use its tuning options. When enabled, MetaSchedule EvolutionarySearch + RandomModel searches the actual operator TIR. When disabled, CPU DLight rules are applied. Compilation and tuning times are recorded separately.
+`--auto-tune` and `--no-auto-tune` override the subconfiguration for all three operators. `--trials` alone does not enable tuning; TVM must be selected to use its tuning options. When enabled, MetaSchedule EvolutionarySearch + RandomModel searches the actual operator TIR. When disabled, LLVM rules generate candidates once and candidate 0 is used without search or mutation. Compilation and tuning times are recorded separately.
 
 Adjust the builder CPU list for your machine. Candidate measurements and final benchmarks remain on the shared CPU with one execution thread. Use a fresh output directory when changing modes, baselines, or compiler versions; configuration checks prevent incompatible results from being mixed.
 
@@ -146,4 +146,4 @@ uv run --frozen python -m common.report \
 uv run --frozen python -m unittest discover -s tests -v
 ```
 
-Default CPU optimization: TVM uses DLight (`[tvm].schedule = "dlight"`); AutoTune overrides it. The wheel provides upstream GEMV/Reduction rules; this project adds `SpatialReduction` for GEMM/direct Conv2D (8-column tiles, vectorization, separate reduction initialization). Every result records the matched rule; unmatched operators fail instead of falling back to naive. Set `schedule = "naive"` explicitly for the original TIR. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.
+Default CPU optimization: TVM uses `[tvm].schedule = "llvm"`: one fixed-seed generation with `ms.ScheduleRule.create("llvm")`, `mutator_probs={}`, no search strategy or cost model, and direct selection of candidate 0. Target-selected postprocessing finalizes annotations, matching the default-rule experiment. Rejected candidate 0 fails; it never silently switches to a different candidate. AutoTune overrides this mode when enabled. DLight and naive remain explicit alternatives. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.

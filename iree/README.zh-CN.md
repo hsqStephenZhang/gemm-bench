@@ -36,4 +36,4 @@ Dump 位于 `<output>/iree/artifacts/<operator_dims>/`：沿用 `matmul.mlir` / 
 
 公共配置、用例格式和选择参数见[项目 README](../README.zh-CN.md)。
 
-默认 CPU 优化：TVM 使用 DLight（`[tvm].schedule = "dlight"`），AutoTune 开启时优先。wheel 提供上游 GEMV/Reduction 规则；项目为 GEMM/直接 Conv2D 补充 `SpatialReduction`（8 列分块、向量化、分离 reduction 初始化）。每条结果记录命中规则，未匹配则报错，不退回 naive。显式设置 `schedule = "naive"` 可测试原始 TIR。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。
+默认 CPU 优化：TVM 使用 `[tvm].schedule = "llvm"`：固定 seed，以 `ms.ScheduleRule.create("llvm")` 生成一次候选，`mutator_probs={}`，不创建搜索策略或 cost model，直接使用候选 0。target 后处理仅落实标注，与默认规则实验一致。候选 0 被拒绝则报错，不静默切换其他候选。AutoTune 开启时优先；DLight 和 naive 保留为显式可选项。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。

@@ -29,15 +29,15 @@ trials = 64
 
 | Mode | Execution path | Result markers |
 |---|---|---|
-| Default / --no-auto-tune | CPU DLight rules → LLVM | auto_tune=false, variant=dlight |
+| Default / --no-auto-tune | One LLVM-rule generation → candidate 0 → LLVM | auto_tune=false, variant=llvm_default |
 | --auto-tune | MetaSchedule-selected schedule → LLVM | auto_tune=true, variant=auto_tuned |
 
-Default mode applies deterministic CPU DLight schedules without search or database reuse. GEMM/Conv2D use the project rule; GEMV uses the upstream rule. Tuned mode uses EvolutionarySearch + RandomModel, with 64 candidates per case by default.
+Default mode uses candidate 0 from one seeded LLVM-rule generation. It performs no search, mutations, timing-based selection or tuning-database reuse. Postprocessing finalizes loop annotations. Set `schedule = "dlight"` to use the upstream GEMV rule and project GEMM/Conv2D rules. Tuned mode uses EvolutionarySearch + RandomModel, with 64 candidates per case by default.
 
 ```bash
 # Disable tuning
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack,k49 --dump --output results/tvm-dlight
+  --cases pack,k49 --dump --output results/tvm-llvm-default
 
 # Enable tuning; a fresh directory starts a new search
 uv run --frozen python run.py --backends tvm --auto-tune --trials 64 \
@@ -92,7 +92,7 @@ The native evaluator adaptively increases calls to meet the minimum duration and
 
 ```bash
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack --dump --output results/tvm-dlight-dump
+  --cases pack --dump --output results/tvm-llvm-default-dump
 
 uv run --frozen python tvm/run.py --auto-tune --trials 64 \
   --cases pack --output results/tvm-tuned-dump --dump-dir results/tvm-artifacts
@@ -102,7 +102,7 @@ The unified entry point exports to `<output>/tvm/artifacts/<operator_dims>/`; th
 
 | File | Contents |
 |---|---|
-| final_tir.py | The final TIR actually compiled; the DLight-scheduled TIR by default |
+| final_tir.py | The final TIR actually compiled; the LLVM-rule candidate 0 TIR by default |
 | final_trace.txt | The selected schedule trace, or an explicit statement that no schedule transformations were applied |
 | module.so | The shared library measured in this run |
 | kernel.ll / kernel.s | Optimized LLVM IR / CPU assembly from the measured build |
@@ -130,4 +130,15 @@ The `[tool.ty.environment]` section of `pyproject.toml` points to `.venv`. ty re
 
 All new results use the PyTorch baseline; historical records retain their OpenBLAS baseline. The `baseline/` dump contains the measured PyTorch wrapper. See the [project README](../README.md) for Conv2D output allocation boundaries.
 
-Default CPU optimization: TVM uses DLight (`[tvm].schedule = "dlight"`); AutoTune overrides it. The wheel provides upstream GEMV/Reduction rules; this project adds `SpatialReduction` for GEMM/direct Conv2D (8-column tiles, vectorization, separate reduction initialization). Every result records the matched rule; unmatched operators fail instead of falling back to naive. Set `schedule = "naive"` explicitly for the original TIR. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.
+Default CPU optimization: TVM uses `[tvm].schedule = "llvm"`: one fixed-seed generation with `ms.ScheduleRule.create("llvm")`, `mutator_probs={}`, no search strategy or cost model, and direct selection of candidate 0. Target-selected postprocessing finalizes annotations, matching the default-rule experiment. Rejected candidate 0 fails; it never silently switches to a different candidate. AutoTune overrides this mode when enabled. DLight and naive remain explicit alternatives. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.
+
+`[tvm.auto_tune].schedule_rules` defaults to `"from-target"` (target-specific CPU rules, including applicable intrinsic tiling). `"llvm"` explicitly uses `ms.ScheduleRule.create("llvm")`. Use `config/tvm-llvm-rules.toml` for the short generic-rule experiment; adjust builder CPUs for your machine.
+
+To compare only the initial CPU rule candidates, without a search strategy, cost model or mutations:
+
+```bash
+uv run --frozen python tvm/benchmark_rules.py --cpu 0 \
+  --output results/tvm-default-rules
+```
+
+This runs all 16 GEMMs; `--cases sq64,pack` selects a subset. Each rule set generates candidates once with the same seed and `mutator_probs={}`. Both use target-selected postprocessing to finalize loop annotations. The report lists the first candidate, median and best of the initial batch, plus whether final TIRs match; the best-of-batch statistic is not a search-free single default schedule. Every candidate is checked against FP64 and interleaved with a same-core PyTorch baseline. Final TIR/trace/LLVM IR/assembly/modules and exact inputs are saved.

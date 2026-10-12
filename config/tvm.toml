@@ -1,8 +1,10 @@
 [tvm]
-schedule = "dlight" # dlight or naive; auto_tune overrides this when enabled
+schedule = "llvm" # llvm (first candidate, no search/mutation), dlight or naive
+# auto_tune overrides schedule when enabled
 # apache-tvm and its bundled compiler are installed via uv.
 
 [tvm.auto_tune]
+schedule_rules = "from-target" # or llvm for explicit generic CPU rules
 enabled = false
 trials = 64
 num_trials_per_iter = 16

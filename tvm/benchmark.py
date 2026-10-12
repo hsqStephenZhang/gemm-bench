@@ -9,6 +9,7 @@ import tvm
 from common.tvm_ops import module as operator_module
 from common.operators import tensor_shapes
 from common.tvm_dlight import schedule as dlight_schedule
+from common.tvm_schedule_rules import schedule as llvm_schedule
 from tvm.s_tir import meta_schedule as ms
 
 from common.runner import run
@@ -26,15 +27,25 @@ class TVM:
     def __init__(self, config, settings):
         self.bench,self.tuning = config['benchmark'],settings['tvm']['auto_tune']
         self.auto_tune = self.tuning.get('enabled',False)
-        self.schedule_mode = settings['tvm'].get('schedule','dlight')
-        if self.schedule_mode not in ('dlight','naive'):
-            raise ValueError('tvm.schedule must be dlight or naive')
+        self.schedule_rules = self.tuning.get('schedule_rules','from-target')
+        if self.schedule_rules not in ('from-target','llvm'):
+            raise ValueError('tvm.auto_tune.schedule_rules must be from-target or llvm')
+        self.schedule_mode = settings['tvm'].get('schedule','llvm')
+        if self.schedule_mode not in ('llvm','dlight','naive'):
+            raise ValueError('tvm.schedule must be llvm, dlight or naive')
         if self.auto_tune and self.tuning.get('builder_cpus'):
             os.environ['GEMM_TVM_BUILDER_CPUS'] = ','.join(map(str,self.tuning['builder_cpus']))
         assert tvm.runtime.num_threads()==1
         self.target = tvm.target.Target({'kind':'llvm','mcpu':self.bench['mcpu'],'num-cores':1})
-        self.metadata = dict(auto_tune=self.auto_tune,variant='auto_tuned' if self.auto_tune else self.schedule_mode,tvm=tvm.__version__,tvm_threads=tvm.runtime.num_threads(),
-                             target=str(self.target),search='MetaSchedule EvolutionarySearch + RandomModel' if self.auto_tune else ('CPU DLight rules + LLVM' if self.schedule_mode == 'dlight' else 'none: original operator TIR + default LLVM lowering'),
+        mode = 'auto_tuned' if self.auto_tune else ('llvm_default' if self.schedule_mode == 'llvm' else self.schedule_mode)
+        search = 'MetaSchedule EvolutionarySearch + RandomModel' if self.auto_tune else {
+            'llvm': 'none: one seeded LLVM-rule generation, candidate 0, no mutations',
+            'dlight': 'CPU DLight rules + LLVM',
+            'naive': 'none: original operator TIR + default LLVM lowering',
+        }[self.schedule_mode]
+        effective_rules = self.schedule_rules if self.auto_tune else ('llvm' if self.schedule_mode == 'llvm' else self.schedule_mode)
+        self.metadata = dict(schedule_rules=effective_rules,auto_tune=self.auto_tune,variant=mode,tvm=tvm.__version__,tvm_threads=tvm.runtime.num_threads(),
+                             target=str(self.target),search=search,
                              trials=self.tuning['trials'] if self.auto_tune else 0,
                              tvm_distribution=version('apache-tvm'),tvm_package_path=str(Path(tvm.__file__).resolve()),
                              compiler_build=tvm.support.libinfo())
@@ -48,7 +59,9 @@ class TVM:
             if cached:
                 database = ms.database.JSONDatabase(work_dir=str(work))
             else:
-                database = ms.tir_integration.tune_tir(mod=mod,target=self.target,work_dir=str(work),
+                space = ms.space_generator.PostOrderApply(
+                    sch_rules=ms.ScheduleRule.create('llvm') if self.schedule_rules == 'llvm' else 'from-target')
+                database = ms.tir_integration.tune_tir(space=space,mod=mod,target=self.target,work_dir=str(work),
                         max_trials_global=self.tuning['trials'],num_trials_per_iter=self.tuning['num_trials_per_iter'],
                         builder=ms.builder.LocalBuilder(max_workers=self.tuning['builder_workers'],initializer=builder_affinity),
                         runner=ms.runner.LocalRunner(evaluator_config=ms.runner.EvaluatorConfig(
@@ -60,6 +73,9 @@ class TVM:
                 raise RuntimeError(f'No valid TVM schedule for {case}')
             final_mod,trace = schedule.mod,str(schedule.trace)
             details = dict(auto_tune=True,tuning_s=tuning_s,valid_records=len(database))
+        elif self.schedule_mode == 'llvm':
+            final_mod,trace,details = llvm_schedule(mod,self.target,self.bench['seed'])
+            details.update(auto_tune=False,tuning_s=0.0,valid_records=0)
         elif self.schedule_mode == 'dlight':
             final_mod,trace,rule = dlight_schedule(mod,self.target,case)
             details = dict(auto_tune=False,tuning_s=0.0,valid_records=0,schedule='dlight',schedule_rule=rule)

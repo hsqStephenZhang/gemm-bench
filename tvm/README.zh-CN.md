@@ -30,15 +30,15 @@ trials = 64
 
 | 模式 | 执行路径 | 结果标记 |
 |---|---|---|
-| 默认 / --no-auto-tune | CPU DLight 规则 → LLVM | auto_tune=false, variant=dlight |
+| 默认 / --no-auto-tune | LLVM 规则生成一次 → 候选 0 → LLVM | auto_tune=false, variant=llvm_default |
 | --auto-tune | MetaSchedule 选择调度 → LLVM | auto_tune=true, variant=auto_tuned |
 
-默认模式应用确定性 CPU DLight 调度，不搜索或复用数据库。GEMM/Conv2D 使用项目规则，GEMV 使用上游规则。调优模式仍使用 EvolutionarySearch + RandomModel，每组默认 64 候选。
+默认模式使用固定 seed 的 LLVM 规则生成一次候选，直接采用候选 0，不搜索、变异、按性能挑选或复用调优数据库。后处理仅落实循环标注。显式设置 `schedule = "dlight"` 可使用上游 GEMV 规则和项目 GEMM/Conv2D 规则。调优模式仍使用 EvolutionarySearch + RandomModel，每组默认 64 候选。
 
 ```bash
 # 关闭调优
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack,k49 --dump --output results/tvm-dlight
+  --cases pack,k49 --dump --output results/tvm-llvm-default
 
 # 开启调优；使用新目录实施全新搜索
 uv run --frozen python run.py --backends tvm --auto-tune --trials 64 \
@@ -93,7 +93,7 @@ seconds_per_call = evaluator(a, b, c).results[0]
 
 ```bash
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack --dump --output results/tvm-dlight-dump
+  --cases pack --dump --output results/tvm-llvm-default-dump
 
 uv run --frozen python tvm/run.py --auto-tune --trials 64 \
   --cases pack --output results/tvm-tuned-dump --dump-dir results/tvm-artifacts
@@ -103,8 +103,8 @@ uv run --frozen python tvm/run.py --auto-tune --trials 64 \
 
 | 文件 | 内容 |
 |---|---|
-| final_tir.py | 实际编译的最终 TIR；默认是 DLight 调度后的 TIR |
-| final_trace.txt | AutoTune 或 DLight 的实际调度 trace；naive 模式记录未变换 |
+| final_tir.py | 实际编译的最终 TIR；默认是 LLVM 规则生成的候选 0 TIR |
+| final_trace.txt | LLVM 默认规则、AutoTune 或 DLight 的实际调度 trace；naive 模式记录未变换 |
 | module.so | 本次实际测量模块的动态库 |
 | kernel.ll / kernel.s | 被测构建的优化后 LLVM IR / CPU 汇编 |
 | A.npy / B.npy | 精确输入 |
@@ -133,4 +133,15 @@ cat tvm/reference-results/1024_1024_1024/best_trace.txt
 
 所有新结果的 baseline 为 PyTorch；旧历史记录仍使用原 OpenBLAS baseline。`baseline/` dump 保存实际测量的 PyTorch 包装器，Conv2D 的框架输出分配范围见公共 README。
 
-默认 CPU 优化：TVM 使用 DLight（`[tvm].schedule = "dlight"`），AutoTune 开启时优先。wheel 提供上游 GEMV/Reduction 规则；项目为 GEMM/直接 Conv2D 补充 `SpatialReduction`（8 列分块、向量化、分离 reduction 初始化）。每条结果记录命中规则，未匹配则报错，不退回 naive。显式设置 `schedule = "naive"` 可测试原始 TIR。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。
+默认 CPU 优化：TVM 使用 `[tvm].schedule = "llvm"`：固定 seed，以 `ms.ScheduleRule.create("llvm")` 生成一次候选，`mutator_probs={}`，不创建搜索策略或 cost model，直接使用候选 0。target 后处理仅落实标注，与默认规则实验一致。候选 0 被拒绝则报错，不静默切换其他候选。AutoTune 开启时优先；DLight 和 naive 保留为显式可选项。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。
+
+`[tvm.auto_tune].schedule_rules` 默认 `"from-target"`（按 target 选择 CPU 规则，包含适用的 intrinsic tiling）；`"llvm"` 显式使用 `ms.ScheduleRule.create("llvm")`。短实验配置为 `config/tvm-llvm-rules.toml`，请按机器修改 builder CPU。
+
+只比较初始 CPU 规则候选，不使用搜索策略、cost model 或变异：
+
+```bash
+uv run --frozen python tvm/benchmark_rules.py --cpu 0 \
+  --output results/tvm-default-rules
+```
+
+默认运行 16 组 GEMM；`--cases sq64,pack` 可选子集。两种规则使用相同 seed，各生成一次候选，`mutator_probs={}`；共同使用 target 后处理落实循环标注。报告列出首个候选、初始候选中位数与最佳值，以及最终 TIR 是否一致；初始批次最佳值不是唯一的默认调度。所有候选通过 FP64 校验，与同核心 PyTorch 交错计时，并保留最终 TIR/trace/LLVM IR/汇编/模块及精确输入。
