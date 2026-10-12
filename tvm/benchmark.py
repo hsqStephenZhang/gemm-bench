@@ -8,6 +8,7 @@ import time
 import tvm
 from common.tvm_ops import module as operator_module
 from common.operators import tensor_shapes
+from common.tvm_dlight import schedule as dlight_schedule
 from tvm.s_tir import meta_schedule as ms
 
 from common.runner import run
@@ -25,12 +26,15 @@ class TVM:
     def __init__(self, config, settings):
         self.bench,self.tuning = config['benchmark'],settings['tvm']['auto_tune']
         self.auto_tune = self.tuning.get('enabled',False)
+        self.schedule_mode = settings['tvm'].get('schedule','dlight')
+        if self.schedule_mode not in ('dlight','naive'):
+            raise ValueError('tvm.schedule must be dlight or naive')
         if self.auto_tune and self.tuning.get('builder_cpus'):
             os.environ['GEMM_TVM_BUILDER_CPUS'] = ','.join(map(str,self.tuning['builder_cpus']))
         assert tvm.runtime.num_threads()==1
         self.target = tvm.target.Target({'kind':'llvm','mcpu':self.bench['mcpu'],'num-cores':1})
-        self.metadata = dict(auto_tune=self.auto_tune,variant='auto_tuned' if self.auto_tune else 'untuned',tvm=tvm.__version__,tvm_threads=tvm.runtime.num_threads(),
-                             target=str(self.target),search='MetaSchedule EvolutionarySearch + RandomModel' if self.auto_tune else 'none: original operator TIR + default LLVM lowering',
+        self.metadata = dict(auto_tune=self.auto_tune,variant='auto_tuned' if self.auto_tune else self.schedule_mode,tvm=tvm.__version__,tvm_threads=tvm.runtime.num_threads(),
+                             target=str(self.target),search='MetaSchedule EvolutionarySearch + RandomModel' if self.auto_tune else ('CPU DLight rules + LLVM' if self.schedule_mode == 'dlight' else 'none: original operator TIR + default LLVM lowering'),
                              trials=self.tuning['trials'] if self.auto_tune else 0,
                              tvm_distribution=version('apache-tvm'),tvm_package_path=str(Path(tvm.__file__).resolve()),
                              compiler_build=tvm.support.libinfo())
@@ -56,6 +60,9 @@ class TVM:
                 raise RuntimeError(f'No valid TVM schedule for {case}')
             final_mod,trace = schedule.mod,str(schedule.trace)
             details = dict(auto_tune=True,tuning_s=tuning_s,valid_records=len(database))
+        elif self.schedule_mode == 'dlight':
+            final_mod,trace,rule = dlight_schedule(mod,self.target,case)
+            details = dict(auto_tune=False,tuning_s=0.0,valid_records=0,schedule='dlight',schedule_rule=rule)
         else:
             final_mod,trace = mod,'# Auto tuning disabled; no schedule transformations applied.\n'
             details = dict(auto_tune=False,tuning_s=0.0,valid_records=0)

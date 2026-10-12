@@ -1,11 +1,13 @@
 """Project entry point for CPU operator comparisons against PyTorch."""
 import argparse
+import json
+from concurrent.futures import ThreadPoolExecutor
 import os
 from pathlib import Path
 import subprocess
 import sys
 
-from common.config import ROOT,environment,load
+from common.config import ROOT,environment,load,resolve_runner_cpus
 from common.report import summarize
 
 
@@ -27,7 +29,9 @@ def main():
     parser.add_argument('--cases-file',type=Path)
     parser.add_argument('--cases',help='Comma-separated named GEMM cases')
     parser.add_argument('--reps',type=int,help='Minimum calls per timing batch')
-    parser.add_argument('--cpu',type=int)
+    parser.add_argument('--cpu',type=int,help='Override every runner CPU except explicit --runner-cpus entries')
+    parser.add_argument('--runner-cpus',help='Comma-separated runner=CPU assignments, e.g. pytorch=0,tvm=2,iree=4')
+    parser.add_argument('--parallel',action=argparse.BooleanOptionalAction,default=None,help='Run backends concurrently; requires distinct CPU assignments')
     parser.add_argument('--mcpu')
     parser.add_argument('--trials',type=int)
     parser.add_argument('--output',type=Path,help='Output root; each backend uses a subdirectory')
@@ -64,12 +68,16 @@ def main():
     if 'tvm' not in selected and (args.auto_tune is not None or args.trials is not None):
         parser.error('--auto-tune/--no-auto-tune/--trials require TVM to be selected')
     backends = ['pytorch',*selected]
+    cpu_map=resolve_runner_cpus(parser,config,backends,args.cpu,args.runner_cpus)
+    parallel=args.parallel if args.parallel is not None else config['benchmark'].get('parallel',False)
+    if parallel and len(set(cpu_map.values()))!=len(backends):
+        parser.error('--parallel requires a distinct CPU for each runner; use --runner-cpus')
     output_root = args.output.resolve() if args.output else ROOT/config['benchmark']['output_root']
     env = environment(config)
+    env.update(GEMM_RUN_PARALLEL='1' if parallel else '0',GEMM_RUNNER_CPUS=json.dumps(cpu_map))
     if args.build_dir is not None:env['GEMM_BUILD_DIR']=str(args.build_dir.resolve())
     env.update(PYTHONPATH=str(ROOT),GEMM_COMMON_CONFIG=str(config_path),GEMM_PYTORCH_CONFIG=str(args.pytorch_config.resolve()))
-    result_files = []
-    for backend in backends:
+    def execute(backend):
         output = output_root/backend
         command = [sys.executable,str(ROOT/(f'{backend}/run.py' if backend!='openblas' else 'common/benchmark_openblas.py'))]
         if backend=='tvm':
@@ -91,13 +99,13 @@ def main():
             code = 'from common.config import load; from common.openblas import OpenBLAS; import os,tempfile; from pathlib import Path; import json\nwith tempfile.TemporaryDirectory() as d:\n print(json.dumps(OpenBLAS(load(os.environ["GEMM_COMMON_CONFIG"]),Path(d)).metadata,indent=2))'
             command = [sys.executable,'-c',code]
         if not args.check:
-            command.extend(['--device',device,'--output',str(output)])
+            command.extend(['--device',device,'--cpu',str(cpu_map[backend]),'--output',str(output)])
             if args.dump is not None:
                 command.append('--dump' if args.dump else '--no-dump')
             if args.dump_dir is not None:
                 destination = args.dump_dir.resolve()/backend
                 command.extend(['--dump-dir',str(destination)])
-            for key in ['shapes','ops','cpu','mcpu','cases','reps']:
+            for key in ['shapes','ops','mcpu','cases','reps']:
                 value = getattr(args,key)
                 if value is not None:
                     command.extend([f'--{key}',str(value)])
@@ -107,9 +115,21 @@ def main():
                 command.append('--auto-tune' if args.auto_tune else '--no-auto-tune')
             if backend=='tvm' and args.trials is not None:
                 command.extend(['--trials',str(args.trials)])
-        print(f'Running {backend} ({device})',flush=True)
-        subprocess.run(command,cwd=ROOT,env=env,check=True)
-        result_files.append(output/'results.json')
+        print(f'Running {backend} ({device}, CPU {cpu_map[backend]})',flush=True)
+        if parallel and not args.check:
+            output_root.mkdir(parents=True,exist_ok=True)
+            log_path=output_root/f'{backend}.log'
+            print(f'{backend} log: {log_path}',flush=True)
+            with log_path.open('w') as log:
+                subprocess.run(command,cwd=ROOT,env=env,stdout=log,stderr=subprocess.STDOUT,check=True)
+        else:
+            subprocess.run(command,cwd=ROOT,env=env,check=True)
+        return output/'results.json'
+    if parallel:
+        with ThreadPoolExecutor(max_workers=len(backends)) as pool:
+            result_files=list(pool.map(execute,backends))
+    else:
+        result_files=[execute(backend) for backend in backends]
     if not args.check:
         summary = output_root/'summary.csv'
         summarize(result_files,summary)

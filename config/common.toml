@@ -1,7 +1,8 @@
 # All paths are relative to the gemm-bench project root.
 [benchmark]
 device = "cpu"
-cpu = 0
+# Omit cpu to select the lowest CPU allowed by the process affinity.
+# cpu = 0  # Optional explicit pin; unavailable CPUs produce a clear error.
 mcpu = "alderlake"
 seed = 42
 dtype = "float32"
@@ -9,11 +10,20 @@ ops = ["gemm", "gemv", "conv2d"]
 cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt"]
 default_reps = 1
 output_root = "results"
+parallel = false
 repeats = 9
 min_repeat_ms = 100
 warmup = 5
 rtol = 0.001
 atol = 0.001
+
+# Optional per-runner pins; omitted entries use benchmark.cpu or the lowest allowed CPU.
+[runner_cpus]
+# pytorch = 0
+# tvm = 2
+# iree = 4
+# openblas = 6
+# mimir = 8
 
 [build]
 # Persistent compiler checkouts and incremental builds.
@@ -36,6 +46,8 @@ link_flags = ["-lopenblas"]
 OPENBLAS_NUM_THREADS = "1"
 OMP_NUM_THREADS = "1"
 TVM_NUM_THREADS = "1"
+# Keep the harness CPU pin; TVM must not rebind worker 0 to CPU 0.
+TVM_BIND_THREADS = "0"
 
 [artifacts]
 # CLI --dump / --no-dump override this setting.

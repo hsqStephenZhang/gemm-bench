@@ -35,3 +35,5 @@ DT 启用 `--iree-opt-data-tiling=true`、`--iree-llvmcpu-enable-ukernels=all`�
 Dump 位于 `<output>/iree/artifacts/<operator_dims>/`：沿用 `matmul.mlir` / `matmul.vmfb` 文件名，内容对应实际选中的算子；包含编译命令/日志、阶段 IR、CPU executable 产物和 VM 字节码反汇编。baseline/ 保存实际测得的 PyTorch 包装器/算子分派信息，输入、结果及 SHA256 清单一起保留。
 
 公共配置、用例格式和选择参数见[项目 README](../README.zh-CN.md)。
+
+默认 CPU 优化：TVM 使用 DLight（`[tvm].schedule = "dlight"`），AutoTune 开启时优先。wheel 提供上游 GEMV/Reduction 规则；项目为 GEMM/直接 Conv2D 补充 `SpatialReduction`（8 列分块、向量化、分离 reduction 初始化）。每条结果记录命中规则，未匹配则报错，不退回 naive。显式设置 `schedule = "naive"` 可测试原始 TIR。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。

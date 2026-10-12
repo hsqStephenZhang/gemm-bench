@@ -1,0 +1,13 @@
+# Extended MetaSchedule experiment; normal defaults remain in tvm.toml.
+[tvm]
+schedule = "dlight"
+
+[tvm.auto_tune]
+enabled = true
+trials = 512
+num_trials_per_iter = 32
+builder_workers = 4
+builder_cpus = [4, 6, 8, 10]
+number = 1
+repeat = 5
+min_repeat_ms = 100

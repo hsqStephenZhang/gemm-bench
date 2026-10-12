@@ -50,6 +50,24 @@ uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
 ```
 
+CPU selection uses the process's allowed affinity mask. With no global or per-runner CPU specified, every backend uses the lowest allowed CPU; CPU 0 is not required. An explicit CPU outside that mask fails with the allowed CPU list. The unified entry point validates the selection before starting a backend and forwards the same CPU to all measurements. Results record both the selected CPU and the original allowed mask. For example, `taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` selects CPU 2, provided those CPUs are available.
+
+## Runner CPU assignments and parallel execution
+
+Configure `[runner_cpus]` in `config/common.toml`, or pass `--runner-cpus pytorch=0,tvm=2,iree=4,openblas=6,mimir=8`. CPU precedence is: a CLI runner entry, global `--cpu`, a configured runner entry, `benchmark.cpu`, then the lowest allowed CPU. Individual entry points honor their configured runner CPU too. All selected assignments are validated before launching any runner.
+
+Each backend and its interleaved PyTorch baseline use the same assigned core. The standalone PyTorch runner may use another core. JSON/CSV record `cpu` and `baseline_cpu`; speedup uses the baseline measured on that backend's core.
+
+`--parallel` runs selected backends concurrently, with a separate `<output>/<backend>.log`; each runner must have a distinct logical CPU. Prefer CPUs from different physical cores, of the same core type. Concurrent runners still share cache and memory bandwidth. `--no-parallel` forces sequential execution. The default is `benchmark.parallel = false`.
+
+```bash
+uv run --frozen python run.py --backends all --parallel \
+  --runner-cpus pytorch=0,tvm=2,iree=4,openblas=6,mimir=8 \
+  --dump --output results/full-suite
+```
+
+TVM automatic thread binding is disabled with `TVM_BIND_THREADS=0`, so it cannot reset the main thread to CPU 0. The harness verifies actual affinity after warmup and every timing batch; drift stops the run instead of silently recording the requested CPU. Each result records `observed_affinity`.
+
 ## MimIR remote and build cache
 
 `config/mimir.toml` defaults to `remote = "mimir/mimir"` and `ref = "master"`. Override these with `--mimir-remote` and `--mimir-ref`. The first run clones into `<build>/mimir/source`; later runs fetch/switch in the same checkout and incrementally rebuild in `<build>/mimir/compiler`. Set `[build].directory` in `config/common.toml` or use `--build-dir` (default: `build`). Changing experimental outputs does not create another clone. MimIR's `--check` also prepares the compiler when needed.
@@ -103,7 +121,7 @@ enabled = false
 trials = 64
 ```
 
-`--auto-tune` and `--no-auto-tune` override the subconfiguration for all three operators. `--trials` alone does not enable tuning; TVM must be selected to use its tuning options. When enabled, MetaSchedule EvolutionarySearch + RandomModel searches the actual operator TIR. When disabled, the original TIR is compiled directly. Compilation and tuning times are recorded separately.
+`--auto-tune` and `--no-auto-tune` override the subconfiguration for all three operators. `--trials` alone does not enable tuning; TVM must be selected to use its tuning options. When enabled, MetaSchedule EvolutionarySearch + RandomModel searches the actual operator TIR. When disabled, CPU DLight rules are applied. Compilation and tuning times are recorded separately.
 
 Adjust the builder CPU list for your machine. Candidate measurements and final benchmarks remain on the shared CPU with one execution thread. Use a fresh output directory when changing modes, baselines, or compiler versions; configuration checks prevent incompatible results from being mixed.
 
@@ -127,3 +145,5 @@ uv run --frozen python -m common.report \
   --output results/multiop/selected-summary.csv
 uv run --frozen python -m unittest discover -s tests -v
 ```
+
+Default CPU optimization: TVM uses DLight (`[tvm].schedule = "dlight"`); AutoTune overrides it. The wheel provides upstream GEMV/Reduction rules; this project adds `SpatialReduction` for GEMM/direct Conv2D (8-column tiles, vectorization, separate reduction initialization). Every result records the matched rule; unmatched operators fail instead of falling back to naive. Set `schedule = "naive"` explicitly for the original TIR. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.

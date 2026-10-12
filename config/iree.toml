@@ -1,8 +1,8 @@
 [iree]
-variant = "default"
+variant = "data-tiling"
 backend = "llvm-cpu"
 driver = "local-sync"
-compiler_flags = []
+compiler_flags = ["--iree-opt-data-tiling=true", "--iree-llvmcpu-enable-ukernels=all"]
 # local-sync invokes kernels on the calling thread, without task workers.
 benchmark_flags = []
 dump_ir = true

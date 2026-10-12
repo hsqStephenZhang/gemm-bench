@@ -1,0 +1,7 @@
+[iree]
+variant = "default"
+backend = "llvm-cpu"
+driver = "local-sync"
+compiler_flags = []
+benchmark_flags = []
+dump_ir = true

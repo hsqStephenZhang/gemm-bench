@@ -1,4 +1,5 @@
 [tvm]
+schedule = "dlight" # dlight or naive; auto_tune overrides this when enabled
 # apache-tvm and its bundled compiler are installed via uv.
 
 [tvm.auto_tune]
@@ -6,8 +7,9 @@ enabled = false
 trials = 64
 num_trials_per_iter = 16
 builder_workers = 4
-# Compilation can use other P-cores; kernel measurements remain on benchmark.cpu.
-builder_cpus = [2,4,6,8]
+# Empty: use allowed CPUs other than the measurement CPU, or that CPU if it is the only one.
+# Explicit lists must be within the process's original allowed CPU set.
+builder_cpus = []
 number = 1
 repeat = 3
 min_repeat_ms = 20

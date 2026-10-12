@@ -29,15 +29,15 @@ trials = 64
 
 | Mode | Execution path | Result markers |
 |---|---|---|
-| Default / --no-auto-tune | Original operator TIR → default LLVM lowering/optimization | auto_tune=false, variant=untuned |
+| Default / --no-auto-tune | CPU DLight rules → LLVM | auto_tune=false, variant=dlight |
 | --auto-tune | MetaSchedule-selected schedule → LLVM | auto_tune=true, variant=auto_tuned |
 
-Untuned mode applies no manual tiling, schedule search, or database reuse. It is the original TIR reference implementation and should not be interpreted as a high-performance default GEMM implementation. Tuned mode uses EvolutionarySearch + RandomModel, with 64 candidates per case by default.
+Default mode applies deterministic CPU DLight schedules without search or database reuse. GEMM/Conv2D use the project rule; GEMV uses the upstream rule. Tuned mode uses EvolutionarySearch + RandomModel, with 64 candidates per case by default.
 
 ```bash
 # Disable tuning
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack,k49 --dump --output results/tvm-untuned
+  --cases pack,k49 --dump --output results/tvm-dlight
 
 # Enable tuning; a fresh directory starts a new search
 uv run --frozen python run.py --backends tvm --auto-tune --trials 64 \
@@ -73,7 +73,7 @@ uv run --frozen python run.py --backends tvm --ops gemv,conv2d \
 ## Benchmark method and timing boundaries
 
 1. Shared code generates FP32 row-major A/B and an FP64 reference, pins the process to the shared CPU, and sets TVM execution threads to one.
-2. When tuning is enabled, the MetaSchedule runner defaults to `number=1, repeat=3, min_repeat_ms=20` per candidate for schedule selection. Tuning time is recorded separately. Four builders can compile on CPUs 2/4/6/8; candidate measurements remain on shared CPU 0 with one execution thread. Adjust the builder CPU list on other machines.
+2. When tuning is enabled, the MetaSchedule runner defaults to `number=1, repeat=3, min_repeat_ms=20` per candidate for schedule selection. Tuning time is recorded separately. Up to four builders compile using the original allowed CPU mask. An empty builder_cpus list automatically selects allowed CPUs other than the measurement CPU, falling back to that CPU when only one is available. Explicit lists are validated against the original mask. Candidate measurements remain on the selected shared CPU with one execution thread.
 3. Compile the final module, copy A/B into TVM tensors, and preallocate C. Shared code runs five warmups and checks correctness.
 4. Both modes use the same native timing:
 
@@ -92,7 +92,7 @@ The native evaluator adaptively increases calls to meet the minimum duration and
 
 ```bash
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack --dump --output results/tvm-untuned-dump
+  --cases pack --dump --output results/tvm-dlight-dump
 
 uv run --frozen python tvm/run.py --auto-tune --trials 64 \
   --cases pack --output results/tvm-tuned-dump --dump-dir results/tvm-artifacts
@@ -102,7 +102,7 @@ The unified entry point exports to `<output>/tvm/artifacts/<operator_dims>/`; th
 
 | File | Contents |
 |---|---|
-| final_tir.py | The final TIR actually compiled; the original operator TIR when tuning is disabled |
+| final_tir.py | The final TIR actually compiled; the DLight-scheduled TIR by default |
 | final_trace.txt | The selected schedule trace, or an explicit statement that no schedule transformations were applied |
 | module.so | The shared library measured in this run |
 | kernel.ll / kernel.s | Optimized LLVM IR / CPU assembly from the measured build |
@@ -129,3 +129,5 @@ Reuse databases only with matching TVM versions, builds, and CPU targets. After 
 The `[tool.ty.environment]` section of `pyproject.toml` points to `.venv`. ty resolves `tvm.script` and `tvm.s_tir` from the installed `apache-tvm` package; local source extra-paths are unnecessary. If old diagnostics persist after saving configuration, run `ty: Restart server` or `Developer: Reload Window` from the command palette.
 
 All new results use the PyTorch baseline; historical records retain their OpenBLAS baseline. The `baseline/` dump contains the measured PyTorch wrapper. See the [project README](../README.md) for Conv2D output allocation boundaries.
+
+Default CPU optimization: TVM uses DLight (`[tvm].schedule = "dlight"`); AutoTune overrides it. The wheel provides upstream GEMV/Reduction rules; this project adds `SpatialReduction` for GEMM/direct Conv2D (8-column tiles, vectorization, separate reduction initialization). Every result records the matched rule; unmatched operators fail instead of falling back to naive. Set `schedule = "naive"` explicitly for the original TIR. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.

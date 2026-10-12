@@ -30,15 +30,15 @@ trials = 64
 
 | 模式 | 执行路径 | 结果标记 |
 |---|---|---|
-| 默认 / --no-auto-tune | 原始算子 TIR → 默认 LLVM 降低/优化 | auto_tune=false, variant=untuned |
+| 默认 / --no-auto-tune | CPU DLight 规则 → LLVM | auto_tune=false, variant=dlight |
 | --auto-tune | MetaSchedule 选择调度 → LLVM | auto_tune=true, variant=auto_tuned |
 
-未调优模式没有手工分块、调度搜索或已有数据库复用，是原始 TIR 基线；不能将其理解为高性能默认 GEMM 实现。调优模式仍使用 EvolutionarySearch + RandomModel，每组默认 64 候选。
+默认模式应用确定性 CPU DLight 调度，不搜索或复用数据库。GEMM/Conv2D 使用项目规则，GEMV 使用上游规则。调优模式仍使用 EvolutionarySearch + RandomModel，每组默认 64 候选。
 
 ```bash
 # 关闭调优
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack,k49 --dump --output results/tvm-untuned
+  --cases pack,k49 --dump --output results/tvm-dlight
 
 # 开启调优；使用新目录实施全新搜索
 uv run --frozen python run.py --backends tvm --auto-tune --trials 64 \
@@ -74,7 +74,7 @@ uv run --frozen python run.py --backends tvm --ops gemv,conv2d \
 ## Benchmark 方式与计时边界
 
 1. 公共模块生成 FP32 行主序 A/B 和 FP64 参考结果，将进程固定到公共 CPU，TVM 运行线程数为 1。
-2. 若启用调优，MetaSchedule runner 默认每候选 `number=1, repeat=3, min_repeat_ms=20`，用于选择调度；调优时间单独记录。四个 builder 可在 CPU 2/4/6/8 并行编译，候选测量仍在公共 CPU 0 单线程执行。其他机器请调整 builder CPU 列表。
+2. 若启用调优，MetaSchedule runner 默认每候选 `number=1, repeat=3, min_repeat_ms=20`，用于选择调度；调优时间单独记录。最多四个 builder 在原始允许的 CPU 集合内编译。builder_cpus 为空时自动选择测量 CPU 之外的允许 CPU；只有一个 CPU 时回退到该 CPU。显式列表会校验是否属于原始允许集合。候选测量仍在所选公共 CPU 单线程执行。
 3. 编译最终模块，复制 A/B 到 TVM tensor 并预分配 C；公共模块预热 5 次并校验。
 4. 两种模式使用相同的原生计时：
 
@@ -93,7 +93,7 @@ seconds_per_call = evaluator(a, b, c).results[0]
 
 ```bash
 uv run --frozen python run.py --backends tvm --no-auto-tune \
-  --cases pack --dump --output results/tvm-untuned-dump
+  --cases pack --dump --output results/tvm-dlight-dump
 
 uv run --frozen python tvm/run.py --auto-tune --trials 64 \
   --cases pack --output results/tvm-tuned-dump --dump-dir results/tvm-artifacts
@@ -103,8 +103,8 @@ uv run --frozen python tvm/run.py --auto-tune --trials 64 \
 
 | 文件 | 内容 |
 |---|---|
-| final_tir.py | 实际编译的最终 TIR；关闭调优时为原始算子 TIR |
-| final_trace.txt | 开启时为调度 trace；关闭时明确说明未应用调度变换 |
+| final_tir.py | 实际编译的最终 TIR；默认是 DLight 调度后的 TIR |
+| final_trace.txt | AutoTune 或 DLight 的实际调度 trace；naive 模式记录未变换 |
 | module.so | 本次实际测量模块的动态库 |
 | kernel.ll / kernel.s | 被测构建的优化后 LLVM IR / CPU 汇编 |
 | A.npy / B.npy | 精确输入 |
@@ -132,3 +132,5 @@ cat tvm/reference-results/1024_1024_1024/best_trace.txt
 更多配置、用例和选择说明见[项目 README](../README.zh-CN.md)。
 
 所有新结果的 baseline 为 PyTorch；旧历史记录仍使用原 OpenBLAS baseline。`baseline/` dump 保存实际测量的 PyTorch 包装器，Conv2D 的框架输出分配范围见公共 README。
+
+默认 CPU 优化：TVM 使用 DLight（`[tvm].schedule = "dlight"`），AutoTune 开启时优先。wheel 提供上游 GEMV/Reduction 规则；项目为 GEMM/直接 Conv2D 补充 `SpatialReduction`（8 列分块、向量化、分离 reduction 初始化）。每条结果记录命中规则，未匹配则报错，不退回 naive。显式设置 `schedule = "naive"` 可测试原始 TIR。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。

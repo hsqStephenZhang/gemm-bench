@@ -35,3 +35,5 @@ DT enables `--iree-opt-data-tiling=true` and `--iree-llvmcpu-enable-ukernels=all
 The unified entry point exports to `<output>/iree/artifacts/<operator_dims>/`. The retained filenames `matmul.mlir` and `matmul.vmfb` contain the selected operator. Dumps include compiler commands/logs, intermediate IR, CPU executables, and VM bytecode disassembly. The `baseline/` directory contains the measured PyTorch wrapper and operator dispatch information. Inputs, results, and a SHA256 manifest are included.
 
 See the [project README](../README.md) for shared configuration, case formats, and selection options.
+
+Default CPU optimization: TVM uses DLight (`[tvm].schedule = "dlight"`); AutoTune overrides it. The wheel provides upstream GEMV/Reduction rules; this project adds `SpatialReduction` for GEMM/direct Conv2D (8-column tiles, vectorization, separate reduction initialization). Every result records the matched rule; unmatched operators fail instead of falling back to naive. Set `schedule = "naive"` explicitly for the original TIR. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.

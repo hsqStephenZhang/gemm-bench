@@ -50,6 +50,24 @@ uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
 ```
 
+CPU 选择依据进程当前允许的 affinity 集合。未指定全局或 runner CPU 时，所有后端使用最小可用 CPU，不要求 CPU 0 可用。显式指定集合外的 CPU 会报错并列出允许的 CPU。统一入口在启动后端前校验，并将同一 CPU 转发给所有测量；结果同时记录实际 CPU 和原始允许集合。例如，在 CPU 2/4 可用的机器上，`taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` 自动选择 CPU 2。
+
+## Runner CPU 分配与并行执行
+
+通过 `config/common.toml` 的 `[runner_cpus]` 或 CLI `--runner-cpus pytorch=0,tvm=2,iree=4,openblas=6,mimir=8` 分配 CPU。优先级为：CLI runner 条目、全局 `--cpu`、配置中的 runner 条目、`benchmark.cpu`、最小允许 CPU。独立入口也读取对应 runner 的配置。所有选中 runner 的 CPU 在启动前统一校验。
+
+每个后端及其交替测量的 PyTorch baseline 使用同一分配核心；独立 PyTorch runner 可以使用另一核心。JSON/CSV 保存 `cpu` 和 `baseline_cpu`，加速比使用该后端同核心测得的 baseline。
+
+`--parallel` 并行运行选中的后端，每个保存独立 `<output>/<backend>.log`，要求各 runner 的逻辑 CPU 不同。建议使用同类型、不同物理核心的 CPU；并行 runner 仍共享 cache 和内存带宽。`--no-parallel` 强制串行，默认 `benchmark.parallel = false`。
+
+```bash
+uv run --frozen python run.py --backends all --parallel \
+  --runner-cpus pytorch=0,tvm=2,iree=4,openblas=6,mimir=8 \
+  --dump --output results/full-suite
+```
+
+使用 `TVM_BIND_THREADS=0` 关闭 TVM 自动线程绑核，避免主线程被重新绑定到 CPU 0。框架在预热后和每个计时批次后校验实际 affinity；发生偏移时停止运行，不会静默记录错误的请求 CPU。各条结果保存 `observed_affinity`。
+
 ## MimIR remote 和 build 缓存
 
 `config/mimir.toml` 默认 `remote = "mimir/mimir"`、`ref = "master"`，可用 `--mimir-remote` / `--mimir-ref` 覆盖。首次 clone 到 `<build>/mimir/source`，之后在同一 checkout 中 fetch/切换，并在 `<build>/mimir/compiler` 增量构建。公共配置 `[build].directory` 或 CLI `--build-dir` 指定构建根目录，默认 `build`。切换实验输出目录不会产生新的 clone。MimIR 的 `--check` 也会按需准备编译器。
@@ -103,7 +121,7 @@ enabled = false
 trials = 64
 ```
 
-`--auto-tune` / `--no-auto-tune` 优先于子配置，对三种算子生效。`--trials` 单独使用不启用调优；没有选择 TVM 时不能指定其调优参数。开启时 MetaSchedule EvolutionarySearch + RandomModel 搜索实际算子 TIR；关闭时原始 TIR 直接编译。编译/调优时间单独记录。
+`--auto-tune` / `--no-auto-tune` 优先于子配置，对三种算子生效。`--trials` 单独使用不启用调优；没有选择 TVM 时不能指定其调优参数。开启时 MetaSchedule EvolutionarySearch + RandomModel 搜索实际算子 TIR；关闭时应用 CPU DLight 规则。编译/调优时间单独记录。
 
 调优 builder 的 CPU 列表需要适配机器；候选测量和正式 benchmark 保持公共 CPU 单线程。不同模式、baseline 或编译器版本请使用新输出目录；已有结果的配置校验会阻止混用。
 
@@ -127,3 +145,5 @@ uv run --frozen python -m common.report \
   --output results/multiop/selected-summary.csv
 uv run --frozen python -m unittest discover -s tests -v
 ```
+
+默认 CPU 优化：TVM 使用 DLight（`[tvm].schedule = "dlight"`），AutoTune 开启时优先。wheel 提供上游 GEMV/Reduction 规则；项目为 GEMM/直接 Conv2D 补充 `SpatialReduction`（8 列分块、向量化、分离 reduction 初始化）。每条结果记录命中规则，未匹配则报错，不退回 naive。显式设置 `schedule = "naive"` 可测试原始 TIR。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。
