@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-使用一个 uv 项目对比 CPU FP32 GEMM、GEMV 和 Conv2D。**PyTorch 是所有算子的必选 baseline**；TVM、IREE、OpenBLAS 是可选对比后端。每个后端与同次运行的 PyTorch 交替测量，加速比为 `PyTorch median / backend median`。
+使用一个 uv 项目对比 CPU FP32 GEMM、GEMV 和 Conv2D。**PyTorch 是所有算子的必选 baseline**；TVM、IREE、OpenBLAS、MimIR 是可选对比后端。每个后端与同次运行的 PyTorch 交替测量，加速比为 `PyTorch median / backend median`。
 
 ```bash
 cd /workspaces/ml-compiler/gemm-bench
@@ -37,16 +37,28 @@ cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_
 tvm = true
 iree = true
 openblas = true
+mimir = true
 ```
 
 `--backends`（同义参数 `--backend`）覆盖可选后端配置，支持任意组合、`all`、`none`。PyTorch 自动运行，不能关闭，不加入可选列表。`--ops gemm,gemv` 覆盖 `benchmark.ops`；`--cases name1,name2` 从选中算子的用例中选择；`--cases-file` 替换整套文件；旧公共配置 `cases_file` 仍可读取。
 
-`--pytorch-config` 同时用于独立 baseline 和各后端的交替 baseline，确保设置一致。`--tvm-config` / `--iree-config` 选择对应专属配置；`--common-config` 选择公共配置。各实现独立入口仍支持公共参数，`--config` 指定该实现配置，`--output` 直接作为本实现目录：
+`--pytorch-config` 同时用于独立 baseline 和各后端的交替 baseline，确保设置一致。`--tvm-config` / `--iree-config` / `--mimir-config` 选择对应专属配置；`--common-config` 选择公共配置。各实现独立入口仍支持公共参数，`--config` 指定该实现配置，`--output` 直接作为本实现目录：
 
 ```bash
 uv run --frozen python tvm/run.py --ops gemv --cases mv_pack --auto-tune --trials 16
 uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
+```
+
+## MimIR remote 和 build 缓存
+
+`config/mimir.toml` 默认 `remote = "mimir/mimir"`、`ref = "master"`，可用 `--mimir-remote` / `--mimir-ref` 覆盖。首次 clone 到 `<build>/mimir/source`，之后在同一 checkout 中 fetch/切换，并在 `<build>/mimir/compiler` 增量构建。公共配置 `[build].directory` 或 CLI `--build-dir` 指定构建根目录，默认 `build`。切换实验输出目录不会产生新的 clone。MimIR 的 `--check` 也会按需准备编译器。
+
+```bash
+# 只跑上游 MimIR master 与必选 PyTorch baseline
+uv run --frozen python run.py --backends mimir --mimir-ref master \
+  --cases pack,mv_pack,conv_small,conv_1x1 --reps 1 --dump \
+  --output results/mimir-master-vs-pytorch
 ```
 
 ## 用例格式
@@ -75,6 +87,7 @@ conv2d  name N Cin H W Cout KH KW stride pad reps
 | PyTorch baseline | ATen `mm.out` | ATen `mv.out` | ATen `convolution` | 原生 C++ 循环；GEMM/GEMV 输出预分配；Conv2D 包含输出分配和框架内部 packing |
 | TVM | GEMM TIR | 向量 reduction TIR | NCHW reduction TIR，包含 padding 判断 | 原生 `time_evaluator`；输出预分配，可选 MetaSchedule |
 | IREE | `linalg.matmul` | `linalg.matvec` | `linalg.conv_2d_nchw_fchw` + 必要的 `tensor.pad` | 原生 `iree-benchmark-module`；包含 VM、dispatch、输出分配 |
+| MimIR | `tensor.product_2d` | `tensor.dot_product` | `tensor.conv` | 原生 C++ extern 循环；包含输出/内部内存分配和 free |
 | OpenBLAS | `cblas_sgemm` | `cblas_sgemv` | 每次执行 im2col + SGEMM | 原生 C 循环；输出/scratch 预分配；Conv2D packing 和补零计入耗时 |
 
 Conv2D 的 OpenBLAS 行是本项目的 im2col 包装实现，OpenBLAS 没有直接 Conv2D 接口。各后端计时边界不同，`timing_scope` 和 `baseline_timing_scope` 明确记录差异。
@@ -100,9 +113,9 @@ trials = 64
 
 `--dump` 导出到 `<output>/<backend>/artifacts/<operator_dims>/`；`--dump-dir` 另指定根目录，仍添加后端子目录。GEMM 保留旧的 `<M>_<N>_<K>` 目录；GEMV/Conv2D 添加算子前缀，避免同尺寸冲突。独立入口不再添加后端子目录。`--dump-dir` 隐含开启，`--no-dump` 覆盖公共配置；`--check` 不生成产物。
 
-每个 dump 包含精确 A/B 输入、结果 JSON、环境/算子信息和 SHA256 清单；`baseline/` 保存本次 PyTorch 被测包装器和对应算子的分派信息，也纳入清单。TVM 保存最终 TIR、trace、LLVM IR、汇编和动态库；IREE 保存 MLIR、VMFB、VM 反汇编及编译产物；OpenBLAS/PyTorch 保存包装器和预编译依赖信息。
+每个 dump 包含精确 A/B 输入、结果 JSON、环境/算子信息和 SHA256 清单；`baseline/` 保存本次 PyTorch 被测包装器和对应算子的分派信息，也纳入清单。TVM 保存最终 TIR、trace、LLVM IR、汇编和动态库；IREE 保存 MLIR、VMFB、VM 反汇编及编译产物；MimIR 保存源码/最终 MimIR IR、LLVM IR、汇编和被测动态库；OpenBLAS/PyTorch 保存包装器和预编译依赖信息。
 
-更多复现细节：[TVM](tvm/README.zh-CN.md)、[IREE](iree/README.zh-CN.md)、[PyTorch](pytorch/README.zh-CN.md)。
+更多复现细节：[TVM](tvm/README.zh-CN.md)、[IREE](iree/README.zh-CN.md)、[PyTorch](pytorch/README.zh-CN.md)、[MimIR](mimir/README.zh-CN.md)。
 
 ## 历史结果
 

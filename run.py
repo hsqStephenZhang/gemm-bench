@@ -11,11 +11,15 @@ from common.report import summarize
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--backends','--backend',dest='backends',help='Optional backends: comma-separated tvm,iree,openblas; all or none. Overrides [backends]. PyTorch always runs.')
+    parser.add_argument('--backends','--backend',dest='backends',help='Optional backends: comma-separated tvm,iree,openblas,mimir; all or none. Overrides [backends]. PyTorch always runs.')
     parser.add_argument('--common-config',type=Path,default=ROOT/'config/common.toml')
     parser.add_argument('--tvm-config',type=Path,default=ROOT/'config/tvm.toml')
     parser.add_argument('--auto-tune',action=argparse.BooleanOptionalAction,default=None,help='Enable or disable tuning for the TVM backend')
     parser.add_argument('--iree-config',type=Path,default=ROOT/'config/iree.toml')
+    parser.add_argument('--mimir-remote',help='GitHub owner/repo or Git remote URL')
+    parser.add_argument('--mimir-ref',help='MimIR branch/tag/commit; default from config')
+    parser.add_argument('--build-dir',type=Path,help='Persistent project build root')
+    parser.add_argument('--mimir-config',type=Path,default=ROOT/'config/mimir.toml')
     parser.add_argument('--pytorch-config',type=Path,default=ROOT/'config/pytorch.toml')
     parser.add_argument('--device',choices=['cpu','gpu'])
     parser.add_argument('--shapes')
@@ -40,10 +44,10 @@ def main():
     device = args.device or config['benchmark']['device']
     if device!='cpu':
         parser.error('Only CPU benchmarking is implemented; GPU needs a GPU BLAS baseline')
-    optional = ['tvm','iree','openblas']
+    optional = ['tvm','iree','openblas','mimir']
     selection = config.get('backends',dict.fromkeys(optional,True))
     if set(selection)-set(optional) or any(type(value) is not bool for value in selection.values()):
-        parser.error('[backends] accepts only boolean tvm, iree and openblas settings; PyTorch is mandatory')
+        parser.error('[backends] accepts only boolean tvm, iree, openblas and mimir settings; PyTorch is mandatory')
     if args.backends is None:
         selected = [name for name in optional if selection.get(name,False)]
     elif args.backends == 'all':
@@ -53,13 +57,16 @@ def main():
     else:
         requested = args.backends.split(',')
         if any(name not in optional for name in requested) or len(set(requested)) != len(requested):
-            parser.error('--backends accepts tvm,iree,openblas (comma-separated), all or none; PyTorch is mandatory')
+            parser.error('--backends accepts tvm,iree,openblas,mimir (comma-separated), all or none; PyTorch is mandatory')
         selected = [name for name in optional if name in requested]
+    if 'mimir' not in selected and (args.mimir_remote is not None or args.mimir_ref is not None):
+        parser.error('--mimir-remote/--mimir-ref require MimIR to be selected')
     if 'tvm' not in selected and (args.auto_tune is not None or args.trials is not None):
         parser.error('--auto-tune/--no-auto-tune/--trials require TVM to be selected')
     backends = ['pytorch',*selected]
     output_root = args.output.resolve() if args.output else ROOT/config['benchmark']['output_root']
     env = environment(config)
+    if args.build_dir is not None:env['GEMM_BUILD_DIR']=str(args.build_dir.resolve())
     env.update(PYTHONPATH=str(ROOT),GEMM_COMMON_CONFIG=str(config_path),GEMM_PYTORCH_CONFIG=str(args.pytorch_config.resolve()))
     result_files = []
     for backend in backends:
@@ -67,6 +74,11 @@ def main():
         command = [sys.executable,str(ROOT/(f'{backend}/run.py' if backend!='openblas' else 'common/benchmark_openblas.py'))]
         if backend=='tvm':
             command.extend(['--config',str(args.tvm_config.resolve())])
+        if backend=='mimir':
+            command.extend(['--config',str(args.mimir_config.resolve())])
+            if args.mimir_remote is not None:command.extend(['--remote',args.mimir_remote])
+            if args.mimir_ref is not None:command.extend(['--ref',args.mimir_ref])
+            if args.build_dir is not None:command.extend(['--build-dir',str(args.build_dir.resolve())])
         if backend=='pytorch':
             command.extend(['--config',str(args.pytorch_config.resolve())])
         if backend=='iree':

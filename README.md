@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A single uv project for comparing CPU FP32 GEMM, GEMV, and Conv2D. **PyTorch is the required baseline for every operator**; TVM, IREE, and OpenBLAS are optional comparison backends. Each backend is measured alternately with PyTorch in the same run. Speedup is `PyTorch median / backend median`.
+A single uv project for comparing CPU FP32 GEMM, GEMV, and Conv2D. **PyTorch is the required baseline for every operator**; TVM, IREE, OpenBLAS, and MimIR are optional comparison backends. Each backend is measured alternately with PyTorch in the same run. Speedup is `PyTorch median / backend median`.
 
 ```bash
 cd /workspaces/ml-compiler/gemm-bench
@@ -37,16 +37,28 @@ cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_
 tvm = true
 iree = true
 openblas = true
+mimir = true
 ```
 
 `--backends` (alias: `--backend`) overrides optional backend selection. It accepts any combination, `all`, or `none`. PyTorch runs automatically and cannot be disabled; omit it from the optional list. `--ops gemm,gemv` overrides `benchmark.ops`; `--cases name1,name2` selects named cases from the chosen operators; `--cases-file` replaces the configured file list. The legacy `cases_file` setting is still supported.
 
-`--pytorch-config` controls both the standalone baseline run and the baseline interleaved with each backend. `--tvm-config` and `--iree-config` select backend configurations; `--common-config` selects the shared configuration. The individual entry points also accept shared options. Their `--config` selects the backend configuration, and their `--output` is used directly as that backend's directory:
+`--pytorch-config` controls both the standalone baseline run and the baseline interleaved with each backend. `--tvm-config`, `--iree-config`, and `--mimir-config` select backend configurations; `--common-config` selects the shared configuration. The individual entry points also accept shared options. Their `--config` selects the backend configuration, and their `--output` is used directly as that backend's directory:
 
 ```bash
 uv run --frozen python tvm/run.py --ops gemv --cases mv_pack --auto-tune --trials 16
 uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
+```
+
+## MimIR remote and build cache
+
+`config/mimir.toml` defaults to `remote = "mimir/mimir"` and `ref = "master"`. Override these with `--mimir-remote` and `--mimir-ref`. The first run clones into `<build>/mimir/source`; later runs fetch/switch in the same checkout and incrementally rebuild in `<build>/mimir/compiler`. Set `[build].directory` in `config/common.toml` or use `--build-dir` (default: `build`). Changing experimental outputs does not create another clone. MimIR's `--check` also prepares the compiler when needed.
+
+```bash
+# Only upstream MimIR master versus the required PyTorch baseline
+uv run --frozen python run.py --backends mimir --mimir-ref master \
+  --cases pack,mv_pack,conv_small,conv_1x1 --reps 1 --dump \
+  --output results/mimir-master-vs-pytorch
 ```
 
 ## Case format
@@ -75,6 +87,7 @@ All backends use FP32 inputs generated with the same seed, the same CPU affinity
 | PyTorch baseline | ATen `mm.out` | ATen `mv.out` | ATen `convolution` | Native C++ loop; preallocated GEMM/GEMV output; Conv2D includes output allocation and internal packing |
 | TVM | GEMM TIR | Vector reduction TIR | NCHW reduction TIR with padding checks | Native `time_evaluator`; preallocated output; optional MetaSchedule |
 | IREE | `linalg.matmul` | `linalg.matvec` | `linalg.conv_2d_nchw_fchw` with `tensor.pad` when needed | Native `iree-benchmark-module`; includes VM, dispatch, and output allocation |
+| MimIR | `tensor.product_2d` | `tensor.dot_product` | `tensor.conv` | Native C++ extern loop; includes output/internal allocation and free |
 | OpenBLAS | `cblas_sgemm` | `cblas_sgemv` | im2col + SGEMM on every call | Native C loop; preallocated output/scratch; Conv2D includes packing and zero padding |
 
 The OpenBLAS Conv2D path is this project's im2col wrapper; OpenBLAS has no direct Conv2D interface. Backend timing boundaries differ. Results explicitly record `timing_scope` and `baseline_timing_scope`.
@@ -100,9 +113,9 @@ For the unified entry point, `--output` always specifies a root directory: resul
 
 `--dump` exports to `<output>/<backend>/artifacts/<operator_dims>/`. `--dump-dir` specifies another root, still with backend subdirectories. GEMM retains the legacy `<M>_<N>_<K>` directory naming; GEMV and Conv2D use operator prefixes to avoid collisions. Individual entry points do not add a backend subdirectory. `--dump-dir` implies export; `--no-dump` overrides shared configuration. `--check` does not generate artifacts.
 
-Each dump includes exact A/B inputs, result JSON, environment/operator information, and a SHA256 manifest. The `baseline/` directory contains the measured PyTorch wrapper and operator dispatch information, also covered by the manifest. TVM exports final TIR, traces, LLVM IR, assembly, and shared libraries. IREE exports MLIR, VMFB, VM disassembly, and compiler artifacts. OpenBLAS and PyTorch export their wrappers and information about precompiled dependencies.
+Each dump includes exact A/B inputs, result JSON, environment/operator information, and a SHA256 manifest. The `baseline/` directory contains the measured PyTorch wrapper and operator dispatch information, also covered by the manifest. TVM exports final TIR, traces, LLVM IR, assembly, and shared libraries. IREE exports MLIR, VMFB, VM disassembly, and compiler artifacts. MimIR exports source/final MimIR IR, LLVM IR, assembly, and the measured shared library. OpenBLAS and PyTorch export their wrappers and information about precompiled dependencies.
 
-Backend reproduction details: [TVM](tvm/README.md), [IREE](iree/README.md), [PyTorch](pytorch/README.md).
+Backend reproduction details: [TVM](tvm/README.md), [IREE](iree/README.md), [PyTorch](pytorch/README.md), [MimIR](mimir/README.md).
 
 ## Historical results
 

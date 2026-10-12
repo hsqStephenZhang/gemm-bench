@@ -55,7 +55,7 @@ class Operators(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('entry',ROOT/'run.py');entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
         with tempfile.TemporaryDirectory() as tmp:
             cfg=Path(tmp)/'common.toml';cfg.write_text((ROOT/'config/common.toml').read_text().replace('tvm = true','tvm = false').replace('iree = true','iree = false'))
-            for flags,expected in [([],['pytorch','openblas']),(['--backends','none'],['pytorch']),(['--backends','tvm,iree'],['pytorch','tvm','iree'])]:
+            for flags,expected in [([],['pytorch','openblas','mimir']),(['--backends','none'],['pytorch']),(['--backends','tvm,iree'],['pytorch','tvm','iree'])]:
                 with self.subTest(flags=flags),patch.object(sys,'argv',['run.py','--common-config',str(cfg),'--output',tmp,*flags]),patch.object(entry.subprocess,'run') as run,patch.object(entry,'summarize') as summary:
                     entry.main()
                     self.assertEqual([Path(c.args[0][c.args[0].index('--output')+1]).name for c in run.call_args_list],expected)

@@ -20,8 +20,12 @@ def environment(config):
 def parse_args(backend):
     config = load(os.environ.get('GEMM_COMMON_CONFIG', ROOT/'config/common.toml'))
     settings = load(os.environ.get('GEMM_BACKEND_CONFIG', ROOT/f'config/{backend}.toml')) if backend != 'openblas' else {'openblas':config['openblas'].copy()}
+    if backend=='mimir':
+        for key in ['remote','ref']:
+            if 'GEMM_MIMIR_'+key.upper() in os.environ:settings['mimir'][key]=os.environ['GEMM_MIMIR_'+key.upper()]
     bench = config['benchmark'].copy()
     parser = argparse.ArgumentParser(description=f'{backend} FP32 CPU operator benchmark')
+    parser.add_argument('--build-dir',type=Path,default=Path(os.environ.get('GEMM_BUILD_DIR',config.get('build',{}).get('directory','build'))))
     parser.add_argument('--device', choices=['cpu','gpu'], default=bench['device'])
     parser.add_argument('--cpu', type=int, default=bench['cpu'])
     parser.add_argument('--mcpu', default=bench['mcpu'])
@@ -37,6 +41,7 @@ def parse_args(backend):
         parser.add_argument('--auto-tune',action=argparse.BooleanOptionalAction,default=None,help='Enable or disable TVM MetaSchedule auto tuning')
         parser.add_argument('--trials', type=int, default=settings['tvm']['auto_tune']['trials'])
     args = parser.parse_args()
+    config['build']={'directory':str(args.build_dir.resolve())}
     if args.device != 'cpu':
         parser.error('This benchmark currently implements CPU only; GPU requires GPU kernels and a GPU BLAS baseline')
     if bench['dtype'] != 'float32':

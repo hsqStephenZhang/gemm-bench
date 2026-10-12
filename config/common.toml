@@ -15,11 +15,16 @@ warmup = 5
 rtol = 0.001
 atol = 0.001
 
+[build]
+# Persistent compiler checkouts and incremental builds.
+directory = "build"
+
 # Optional implementations; PyTorch always runs as the baseline.
 [backends]
 tvm = true
 iree = true
 openblas = true
+mimir = true
 
 [openblas]
 library = "libopenblas.so"

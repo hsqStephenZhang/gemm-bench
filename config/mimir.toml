@@ -1,0 +1,14 @@
+[mimir]
+# GitHub owner/repo, HTTPS/SSH URL, or local Git remote.
+remote = "mimir/mimir"
+ref = "master"
+variant = "tensor-llvm"
+plugins = ["opt", "ll"]
+compiler_flags = []
+cmake = "cmake"
+cmake_flags = []
+jobs = 4
+clangxx = "clang++"
+compile_flags = ["-O3", "-std=c++20", "-shared", "-fPIC", "-Wno-override-module"]
+# Match benchmark.mcpu; generic uses the compiler's default target.
+target_flags = ["-march={mcpu}"]
