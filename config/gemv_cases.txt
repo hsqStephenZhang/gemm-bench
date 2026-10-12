@@ -1,0 +1,11 @@
+# gemv name M K reps: A[M,K] @ x[K] -> y[M]
+gemv mv64 64 64 2000
+gemv mv128 128 128 500
+gemv mv256 256 256 100
+gemv mv512 512 512 20
+gemv mv1000 1000 1000 5
+gemv mv1024 1024 1024 5
+gemv mv2048 2048 2048 2
+gemv mv_skinny 8 2304 200
+gemv mv_odd 513 2047 10
+gemv mv_pack 64 130 200

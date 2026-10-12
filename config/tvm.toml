@@ -1,0 +1,13 @@
+[tvm]
+# apache-tvm and its bundled compiler are installed via uv.
+
+[tvm.auto_tune]
+enabled = false
+trials = 64
+num_trials_per_iter = 16
+builder_workers = 4
+# Compilation can use other P-cores; kernel measurements remain on benchmark.cpu.
+builder_cpus = [2,4,6,8]
+number = 1
+repeat = 3
+min_repeat_ms = 20

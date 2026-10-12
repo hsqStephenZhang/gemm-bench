@@ -1,0 +1,39 @@
+# All paths are relative to the gemm-bench project root.
+[benchmark]
+device = "cpu"
+cpu = 0
+mcpu = "alderlake"
+seed = 42
+dtype = "float32"
+ops = ["gemm", "gemv", "conv2d"]
+cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt"]
+default_reps = 1
+output_root = "results"
+repeats = 9
+min_repeat_ms = 100
+warmup = 5
+rtol = 0.001
+atol = 0.001
+
+# Optional implementations; PyTorch always runs as the baseline.
+[backends]
+tvm = true
+iree = true
+openblas = true
+
+[openblas]
+library = "libopenblas.so"
+compiler = "cc"
+compile_flags = ["-O3", "-shared", "-fPIC"]
+link_flags = ["-lopenblas"]
+
+[threads]
+OPENBLAS_NUM_THREADS = "1"
+OMP_NUM_THREADS = "1"
+TVM_NUM_THREADS = "1"
+
+[artifacts]
+# CLI --dump / --no-dump override this setting.
+enabled = false
+subdirectory = "artifacts"
+objdump = "objdump"

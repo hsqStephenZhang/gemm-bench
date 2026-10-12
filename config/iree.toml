@@ -1,0 +1,8 @@
+[iree]
+variant = "default"
+backend = "llvm-cpu"
+driver = "local-sync"
+compiler_flags = []
+# local-sync invokes kernels on the calling thread, without task workers.
+benchmark_flags = []
+dump_ir = true

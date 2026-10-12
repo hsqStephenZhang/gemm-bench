@@ -1,0 +1,18 @@
+# op    name          M     K     N       reps
+# GEMM: A[M,K] @ B[K,N] -> C[M,N]. reps is the minimum calls per timing batch.
+gemm    sq64          64    64    64      2000
+gemm    sq128         128   128   128     500
+gemm    sq256         256   256   256     100
+gemm    sq512         512   512   512     20
+gemm    sq1000        1000  1000  1000    5
+gemm    sq1024        1024  1024  1024    5
+gemm    skinny        8     2304  512     200
+gemm    pack          64    130   512     200
+gemm    k49           64    49    1024    200
+gemm    k147          64    147   1024    100
+gemm    k245          64    245   1024    100
+gemm    sq2000        2000  2000  2000    1
+gemm    sq2048        2048  2048  2048    1
+gemm    wide2048      64    2048  2048    5
+gemm    tall2048      2048  512   128     10
+gemm    odd2048       2049  2047  513     2

@@ -1,0 +1,37 @@
+[project]
+name = "gemm-bench"
+version = "0.1.0"
+description = "Reproducible GEMM benchmarks"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==2.4.6",
+  "ml-dtypes==0.5.4",
+  "typing-extensions==4.15.0",
+  "psutil==7.2.2",
+  "cloudpickle==3.1.2",
+  "tornado==6.5.7",
+  "iree-base-compiler==3.12.0rc20260713",
+  "iree-base-runtime==3.12.0rc20260713",
+  "torch==2.12.0+cpu",
+  "apache-tvm>=0.27.0.post1",
+]
+
+[tool.uv]
+package = false
+find-links = ["https://iree.dev/pip-release-links.html"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.ty.environment]
+python = ".venv"
