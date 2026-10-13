@@ -14,6 +14,7 @@ dependencies = [
   "iree-base-runtime==3.12.0rc20260713",
   "torch==2.12.0+cpu",
   "apache-tvm>=0.27.0.post1",
+  "matplotlib>=3.11.2",
 ]
 
 [tool.uv]
