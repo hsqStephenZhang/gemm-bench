@@ -147,3 +147,32 @@ uv run --frozen python -m unittest discover -s tests -v
 ```
 
 默认 CPU 优化：TVM 使用 `[tvm].schedule = "llvm"`：固定 seed，以 `ms.ScheduleRule.create("llvm")` 生成一次候选，`mutator_probs={}`，不创建搜索策略或 cost model，直接使用候选 0。target 后处理仅落实标注，与默认规则实验一致。候选 0 被拒绝则报错，不静默切换其他候选。AutoTune 开启时优先；DLight 和 naive 保留为显式可选项。IREE 默认 DT + `ukernels=all`；`config/iree-default.toml` 保留默认编译 pipeline。
+
+## 可视化结果
+
+`plot.py` 使用公共 uv 环境中的 matplotlib，输入可以是结果目录或其中的长表 `summary.csv`：
+
+```bash
+uv sync --locked
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012
+# 将绝对性能由吞吐率切换为延迟
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012 --absolute latency
+# 筛选算子/后端，使用线性坐标并导出 PDF
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012 \
+  --ops gemm,gemv,conv --backends pytorch,tvm,iree --scale linear \
+  --formats png,pdf --output results/selected-plots
+```
+
+默认在 `<输入目录>/plots/` 输出六面板总览及 GEMM/GEMV/Conv2D 独立图，格式为 PNG 和 SVG。左侧为 GFLOP/s（越高越好），或延迟 ms（越低越好）；右侧为相对 baseline 的加速比（越高越好），虚线为 1×。默认使用对数坐标，`--scale linear` 可将两列都改为线性坐标。加速比使用记录中的同核心 baseline，不用独立 PyTorch 列重新计算。图例包含后端 variant 和 CPU，横轴包含用例尺寸，`--no-shapes` 可隐藏尺寸。缺失结果留空，重复或不一致的数据会报错；绘图元数据记录源 CSV 的哈希。编译、packing、分配和调用的计时范围仍以 benchmark 记录为准。
+
+## PyTorch 两种模式
+
+`[pytorch].mode` 支持 `"eager"`（默认）和 `"inductor"`；CLI `--pytorch-mode` 优先于配置，也可使用 `config/pytorch-inductor.toml`。即使测量 PyTorch Inductor，配对 baseline 仍保持 eager。
+
+```bash
+uv run --frozen python run.py --backends none --pytorch-mode inductor \
+  --ops all --cpu 0 --dump --output results/pytorch-inductor
+uv run --frozen python pytorch/run.py --pytorch-mode eager --cases pack
+```
+
+Inductor 路径为 `torch.export.export` → `torch._inductor.aoti_compile_and_package` → C++ `AOTIModelPackageLoader::run`，使用[官方 AOTInductor 部署接口](https://docs.pytorch.org/docs/stable/torch.compiler_aot_inductor.html)。这是 CPU Inductor 编译图的原生调用，不是计时 Python `torch.compile` callable，计时循环没有 Python 调用。输入是运行时参数，不冻结 weight。计时包含图调用、输出分配及内部 packing，排除编译、图导出和正确性拷贝。默认 `max_autotune=false`、`cpp.threads=1`；编译失败直接报错，不退回 eager。`--dump` 保存导出模型、FX 图、实际测量的 `.pt2` 包、生成 C++/动态库及原生计时 wrapper。两种模式使用独立输出目录。

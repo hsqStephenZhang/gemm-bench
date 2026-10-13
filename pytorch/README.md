@@ -24,3 +24,15 @@ The unified entry point's `--pytorch-config` controls the baseline for every bac
 The unified entry point exports to `<output>/pytorch/artifacts/<operator_dims>/`. Files include `native_timer.cpp`, `pytorch_timer.so`, compile commands/logs, `operator.txt`, `dispatch_table.txt`, `timer_wrapper.s`, PyTorch build/dependency information, exact inputs, results, and a SHA256 manifest. `operator.txt` describes mm.out, mv.out, or convolution according to the selected operator. The assembly is wrapper disassembly; actual ATen kernels reside in precompiled libraries.
 
 See the [project README](../README.md) for shared configuration, case formats, and selection options.
+
+## PyTorch modes
+
+`[pytorch].mode` supports `"eager"` (default) and `"inductor"`. CLI `--pytorch-mode` overrides the configuration; `config/pytorch-inductor.toml` is also provided. Paired baselines always use eager, even when the measured PyTorch runner uses Inductor.
+
+```bash
+uv run --frozen python run.py --backends none --pytorch-mode inductor \
+  --ops all --cpu 0 --dump --output results/pytorch-inductor
+uv run --frozen python pytorch/run.py --pytorch-mode eager --cases pack
+```
+
+Inductor uses `torch.export.export` → `torch._inductor.aoti_compile_and_package` → native C++ `AOTIModelPackageLoader::run`. It measures CPU Inductor compiled graphs with no Python calls in the timing loop, using the [official AOTInductor deployment path](https://docs.pytorch.org/docs/stable/torch.compiler_aot_inductor.html). This is AOTInductor native invocation rather than timing a Python `torch.compile` callable. Inputs are runtime arguments, not constant weights. Output allocation, graph invocation and internal packing are included; compilation, graph export and correctness copies are excluded. Default `max_autotune=false`, `cpp.threads=1`; compilation errors stop the run rather than falling back to eager. `--dump` retains the exported program, FX graph, measured `.pt2` package, generated C++/shared libraries and native timer wrapper. Inductor and eager results need separate output directories.
