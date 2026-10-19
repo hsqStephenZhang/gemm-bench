@@ -8,6 +8,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from common.config import environment,load,reject_dump_check
+from common.host import available_cpus
 
 
 def main():
@@ -22,11 +23,12 @@ def main():
     common_path,config_path=args.common_config.resolve(),args.config.resolve()
     env=environment(load(common_path))
     # Capture allowed CPUs before the shared runner pins kernel measurements.
-    env['GEMM_MIMIR_BUILD_CPUS']=','.join(map(str,os.sched_getaffinity(0)))
+    env['GEMM_MIMIR_BUILD_CPUS']=','.join(map(str,available_cpus()))
     if args.build_dir is not None:env['GEMM_BUILD_DIR']=str(args.build_dir.resolve())
     if args.remote is not None:env['GEMM_MIMIR_REMOTE']=args.remote
     if args.ref is not None:env['GEMM_MIMIR_REF']=args.ref
-    env.update(PYTHONPATH=str(ROOT),GEMM_COMMON_CONFIG=str(common_path),GEMM_BACKEND_CONFIG=str(config_path))
+    env.update(PYTHONPATH=str(ROOT),GEMM_COMMON_CONFIG=str(common_path),GEMM_BACKEND_CONFIG=str(config_path),
+               GEMM_BACKEND_NAME=load(config_path)['mimir'].get('name','mimir'))
     if args.check:
         code='''import json,os
 from common.config import ROOT,load

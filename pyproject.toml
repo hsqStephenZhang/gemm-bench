@@ -12,7 +12,8 @@ dependencies = [
   "tornado==6.5.7",
   "iree-base-compiler==3.12.0rc20260713",
   "iree-base-runtime==3.12.0rc20260713",
-  "torch==2.12.0+cpu",
+  "torch==2.12.0+cpu; sys_platform != 'darwin'",
+  "torch==2.12.0; sys_platform == 'darwin'",
   "apache-tvm>=0.27.0.post1",
 ]
 
@@ -26,7 +27,7 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cpu" }
+torch = { index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

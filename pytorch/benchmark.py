@@ -12,6 +12,8 @@ import torch
 
 from common.runner import run
 from common.operators import tensor_shapes
+from common.host import shared_suffix, disassemble, linker_flags, native_compiler
+from pytorch import blas
 
 
 def configure(settings):
@@ -29,22 +31,24 @@ def metadata(settings):
 
 
 class PyTorch:
-    identity_keys = ['pytorch','torch_build']
+    identity_keys = ['pytorch','torch_build','pytorch_blas']
 
     def __init__(self, config, settings):
         self.settings = settings['pytorch']
         if self.settings['variant'] not in ['eager-mm-out','eager-native']:
             raise ValueError('Only eager-native is implemented')
+        # May re-exec this process under the Accelerate -> OpenBLAS interposer.
+        blas_metadata = blas.activate(config,self.settings)
         configure(self.settings)
-        self.metadata = metadata(self.settings)
+        self.metadata = dict(metadata(self.settings),**blas_metadata)
         self.library = None
         self.artifacts = config.get('artifacts', {})
 
     def build_timer(self, output):
         torch_root = Path(torch.__file__).resolve().parent
         include,lib = torch_root/'include',torch_root/'lib'
-        target = output/'pytorch_timer.so'
-        command = [self.settings['compiler'],*self.settings['compile_flags'],
+        target = output/('pytorch_timer'+shared_suffix())
+        command = [native_compiler(self.settings['compiler']),*self.settings['compile_flags'],*linker_flags(),
                    f'-D_GLIBCXX_USE_CXX11_ABI={int(torch.compiled_with_cxx11_abi())}',
                    '-I',str(include),'-I',str(include/'torch/csrc/api/include'),
                    str(Path(__file__).with_name('native_timer.cpp')),
@@ -69,10 +73,12 @@ class PyTorch:
         if self.library is None:
             self.build_timer(work.parent)
         kernel = Kernel(self.library,case,a,b,self.build_s,self.timer_output,self.artifacts)
+        routed = blas.routed_calls();kernel.run()
+        kernel.details['blas_calls_routed'] = None if routed is None else blas.routed_calls()-routed
         # Confirm that the native measured operator agrees with the Python API.
         with torch.inference_mode():
             x,y=torch.from_numpy(a),torch.from_numpy(b)
-            if case['op']=='gemm':expected=torch.mm(x,y).numpy()
+            if case['op'] in ('gemm','linear'):expected=torch.mm(x,y).numpy()
             elif case['op']=='gemv':expected=torch.mv(x,y).numpy()
             else:expected=torch.nn.functional.conv2d(x,y,stride=case['shape'][7],padding=case['shape'][8]).numpy()
         np.testing.assert_array_equal(kernel.run(),expected)
@@ -86,28 +92,31 @@ class Kernel:
         self.output,self.artifacts = output,artifacts
         self.library,self.a,self.b = library,a,b
         self.case=case
-        self.operator={'gemm':'aten::mm.out','gemv':'aten::mv.out','conv2d':'aten::convolution'}[case['op']]
+        self.operator={'gemm':'aten::mm.out','linear':'aten::mm.out','gemv':'aten::mv.out','conv2d':'aten::convolution'}[case['op']]
         self.scope = 'native '+self.operator+' loop; includes dispatcher and computation; '+('includes output allocation and internal packing' if case['op']=='conv2d' else 'preallocated output')+'; excludes Python/input copies'
+        if case['op']=='linear':
+            # Eager ATen has no CPU weight prepack without oneDNN; the BLAS packs W inside every call.
+            self.scope += '; frozen W [K,N] passed as-is, BLAS packs it per call'
         self.c = np.empty(tensor_shapes(case)[2],dtype='float32')
         dims=np.array(case['shape'],dtype='int32')
-        self.handle = library.create_kernel({'gemm':0,'gemv':1,'conv2d':2}[case['op']],dims,a,b,self.c)
+        self.handle = library.create_kernel({'gemm':0,'linear':0,'gemv':1,'conv2d':2}[case['op']],dims,a,b,self.c)
         if not self.handle:
             raise RuntimeError(library.last_error().decode())
         self.cleanup = weakref.finalize(self,library.destroy_kernel,self.handle)
         self.details = dict(timer_build_s=build_s)
+        if case['op']=='linear':self.details.update(prepack_s=0.0,weight_layout='KN (no prepack)')
 
     def dump(self, destination):
-        for name in ['pytorch_timer.so','timer_compile_command.json','timer_compile.log']:
+        for name in ['pytorch_timer'+shared_suffix(),'timer_compile_command.json','timer_compile.log']:
             shutil.copy2(self.output/name,destination/name)
         shutil.copy2(Path(__file__).with_name('native_timer.cpp'),destination/'native_timer.cpp')
         (destination/'operator.txt').write_text(torch._C._dispatch_dump(self.operator))
         (destination/'dispatch_table.txt').write_text(torch._C._dispatch_dump_table(self.operator))
         (destination/'torch_build.txt').write_text(torch.__config__.show())
         libdir = Path(torch.__file__).resolve().parent/'lib'
-        libraries = [dict(path=str(p),bytes=p.stat().st_size) for p in sorted(libdir.glob('*.so*')) if p.is_file()]
+        libraries = [dict(path=str(p),bytes=p.stat().st_size) for p in sorted(libdir.glob('*'+shared_suffix()+'*')) if p.is_file()]
         (destination/'torch_libraries.json').write_text(json.dumps(libraries,indent=2))
-        with (destination/'timer_wrapper.s').open('w') as out:
-            subprocess.run([self.artifacts.get('objdump','objdump'),'-d','--disassemble=measure',str(self.output/'pytorch_timer.so')],stdout=out,check=True)
+        disassemble(self.artifacts.get('objdump','objdump'),self.output/('pytorch_timer'+shared_suffix()),destination/'timer_wrapper.s',symbol='measure')
         return dict(notes='Eager ATen operators use prebuilt PyTorch libraries. timer_wrapper.s disassembles the measured wrapper, not a newly compiled GEMM kernel; torch_libraries.json references the actual runtime libraries.')
 
     def time(self, count):

@@ -1,11 +1,12 @@
 """TVMScript operators consumed by the same optional MetaSchedule pipeline."""
 import tvm
+from tvm import relax
 from tvm.script import tirx as T
 from common.operators import tensor_shapes
 
 
 def module(case):
-    if case['op']=='gemm':
+    if case['op'] in ('gemm','linear'):
         m,n,k=case['shape']
         @T.prim_func(s_tir=True)
         def main(A:T.Buffer((m,k),'float32'),B:T.Buffer((k,n),'float32'),C:T.Buffer((m,n),'float32')):
@@ -37,4 +38,40 @@ def module(case):
                     C[vn,vo,vy,vx]=C[vn,vo,vy,vx]+T.if_then_else(
                         (vy*stride+vry>=pad) and (vy*stride+vry<h+pad) and (vx*stride+vrx>=pad) and (vx*stride+vrx<w+pad),
                         A[vn,vc,vy*stride+vry-pad,vx*stride+vrx-pad],T.float32(0))*B[vo,vc,vry,vrx]
+    if case['op']=='linear':
+        # Frozen weight: MetaSchedule's RewriteLayout may then pick a packed layout for B.
+        main=main.with_attr('layout_free_buffers',[1])
     return tvm.IRModule({'main':main})
+
+
+def split_weight_prepack(mod, case):
+    """Split a layout-rewritten GEMM into pack(B, Bp) and main(A, Bp, C).
+
+    Returns (module, packed_shape), or (None, None) when the schedule kept B's layout.
+    Uses the same Relax passes as static_shape_tuning_pipeline(cpu_weight_prepack=True).
+    """
+    if 'meta_schedule.layout_rewrite_preproc' not in mod.script():
+        return None,None
+    m,n,k=case['shape']
+    # Parsed from text: TVMScript class bodies cannot see this function's local shapes.
+    wrap=tvm.script.from_source(f'''
+@I.ir_module
+class Wrap:
+    @T.prim_func(s_tir=True)
+    def gemm(A: T.Buffer(({m}, {k}), "float32"), B: T.Buffer(({k}, {n}), "float32"), C: T.Buffer(({m}, {n}), "float32")):
+        T.evaluate(0)
+    @R.function
+    def main(x: R.Tensor(({m}, {k}), "float32"), w: R.Tensor(({k}, {n}), "float32")) -> R.Tensor(({m}, {n}), "float32"):
+        R.func_attr({{"num_input": 1}})
+        with R.dataflow():
+            y = R.call_tir(Wrap.gemm, (x, w), out_ty=R.Tensor(({m}, {n}), "float32"))
+            R.output(y)
+        return y
+''')
+    wrap['gemm']=mod['main'].with_attr('global_symbol','gemm').with_attr('tirx.is_scheduled',True)
+    split=relax.transform.SplitLayoutRewritePreproc()(wrap)
+    pack=split.get_global_var('gemm_weight_prepack')
+    binding=next(b for b in split['main'].body.blocks[0].bindings if b.value.args[0].same_as(pack))
+    shape=tuple(int(d) for d in binding.var.ty.shape)
+    return tvm.IRModule({'main':split['gemm_prepacked'].with_attr('global_symbol','main'),
+                         'pack':split['gemm_weight_prepack'].with_attr('global_symbol','pack')}),shape

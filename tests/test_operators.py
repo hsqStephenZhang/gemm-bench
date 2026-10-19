@@ -55,12 +55,12 @@ class Operators(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('entry',ROOT/'run.py');entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
         with tempfile.TemporaryDirectory() as tmp:
             cfg=Path(tmp)/'common.toml';cfg.write_text((ROOT/'config/common.toml').read_text().replace('tvm = true','tvm = false').replace('iree = true','iree = false'))
-            for flags,expected in [([],['pytorch','openblas','mimir']),(['--backends','none'],['pytorch']),(['--backends','tvm,iree'],['pytorch','tvm','iree'])]:
-                with self.subTest(flags=flags),patch.object(sys,'argv',['run.py','--common-config',str(cfg),'--output',tmp,*flags]),patch.object(entry.subprocess,'run') as run,patch.object(entry,'summarize') as summary:
+            for flags,expected in [([],['pytorch','openblas','mimir','mimir-par']),(['--backends','none'],['pytorch']),(['--backends','tvm,iree'],['pytorch','tvm','iree'])]:
+                with self.subTest(flags=flags),patch.object(sys,'argv',['run.py','--common-config',str(cfg),'--output',tmp,*flags]),patch('common.host.cpu_model',return_value='Apple M2 Pro'),patch.object(entry.subprocess,'run') as run,patch.object(entry,'summarize') as summary:
                     entry.main()
                     self.assertEqual([Path(c.args[0][c.args[0].index('--output')+1]).name for c in run.call_args_list],expected)
                     for call in run.call_args_list:self.assertEqual(call.kwargs['env']['GEMM_PYTORCH_CONFIG'],str(ROOT/'config/pytorch.toml'))
-                    self.assertEqual(summary.call_args.args[0],[Path(tmp)/b/'results.json' for b in expected])
+                    self.assertEqual(summary.call_args.args[0],[Path(tmp).resolve()/b/'results.json' for b in expected])
 
     def test_artifact_guard_precedes_baseline_export(self):
         with tempfile.TemporaryDirectory() as tmp:

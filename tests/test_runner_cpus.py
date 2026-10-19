@@ -29,8 +29,8 @@ class RunnerCPUs(unittest.TestCase):
 
     def test_tvm_automatic_binding_is_disabled_and_affinity_drift_is_rejected(self):
         self.assertEqual(environment({'threads':{'TVM_BIND_THREADS':'1'}})['TVM_BIND_THREADS'],'0')
-        with patch('common.runner.os.sched_getaffinity',return_value={2}):self.assertEqual(check_affinity(2),[2])
-        with patch('common.runner.os.sched_getaffinity',return_value={0}),self.assertRaisesRegex(RuntimeError,r'expected \[2\], observed \[0\]'):
+        with patch('common.host.is_macos',return_value=False),patch('common.host.os.sched_getaffinity',return_value={2},create=True):self.assertEqual(check_affinity(2),[2])
+        with patch('common.host.is_macos',return_value=False),patch('common.host.os.sched_getaffinity',return_value={0},create=True),self.assertRaisesRegex(RuntimeError,r'expected \[2\], observed \[0\]'):
             check_affinity(2)
 
     def entry(self):
@@ -41,7 +41,7 @@ class RunnerCPUs(unittest.TestCase):
         entry=self.entry()
         with tempfile.TemporaryDirectory() as tmp:
             flags=['run.py','--backends','openblas','--parallel','--runner-cpus','pytorch=2,openblas=4','--output',tmp]
-            with patch.object(sys,'argv',flags),patch('common.config.os.sched_getaffinity',return_value={2,4}),patch.object(entry.subprocess,'run') as run,patch.object(entry,'summarize') as summary:
+            with patch.object(sys,'argv',flags),patch('common.host.cpu_model',return_value='Apple M2 Pro'),patch('common.config.available_cpus',return_value={2,4}),patch.object(entry.subprocess,'run') as run,patch.object(entry,'summarize') as summary:
                 entry.main()
             cpus={}
             for call in run.call_args_list:
@@ -49,12 +49,12 @@ class RunnerCPUs(unittest.TestCase):
                 self.assertIn('stdout',call.kwargs)
             self.assertEqual(cpus,dict(pytorch=2,openblas=4))
             for backend in cpus:self.assertTrue((Path(tmp)/(backend+'.log')).is_file())
-            self.assertEqual(summary.call_args.args[0],[Path(tmp)/b/'results.json' for b in ['pytorch','openblas']])
+            self.assertEqual(summary.call_args.args[0],[Path(tmp).resolve()/b/'results.json' for b in ['pytorch','openblas']])
 
     def test_all_cpu_assignments_validated_before_any_launch(self):
         entry=self.entry()
         for flags in [['--backends','tvm','--runner-cpus','pytorch=2,tvm=0'],['--backends','openblas','--parallel','--cpu','2']]:
-            with self.subTest(flags=flags),patch.object(sys,'argv',['run.py',*flags]),patch('common.config.os.sched_getaffinity',return_value={2,4}),patch.object(entry.subprocess,'run') as run,contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
+            with self.subTest(flags=flags),patch.object(sys,'argv',['run.py',*flags]),patch('common.host.cpu_model',return_value='Apple M2 Pro'),patch('common.config.available_cpus',return_value={2,4}),patch.object(entry.subprocess,'run') as run,contextlib.redirect_stderr(io.StringIO()),self.assertRaises(SystemExit):
                 entry.main()
             run.assert_not_called()
 

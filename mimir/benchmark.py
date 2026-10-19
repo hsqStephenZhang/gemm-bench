@@ -2,6 +2,7 @@
 import ctypes
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,7 @@ from common.operators import tensor_shapes
 from common.runner import run
 from mimir.operators import module
 from mimir.checkout import prepare
+from common.host import shared_suffix, target_flags, is_macos, linker_flags
 
 
 def digest(path):
@@ -30,19 +32,26 @@ class MimIR:
         self.source,self.build,self.checkout_state=prepare(config,self.settings)
         self.binary=self.build/'bin/mim'
         self.plugin_dir=self.build/'lib/mim'
-        self.clang=shutil.which(self.settings['clangxx'])
+        clangxx=self.settings['clangxx']
+        if is_macos() and clangxx=='clang++' and Path('/opt/homebrew/opt/llvm/bin/clang++').is_file():
+            clangxx='/opt/homebrew/opt/llvm/bin/clang++'
+        self.clang=shutil.which(clangxx)
         if not self.binary.is_file() or not self.clang:
             raise ValueError('Missing built MimIR or clang++; configure config/mimir.toml')
         required=['tensor','core','math',*self.settings['plugins']]
         paths=[self.binary]
         for name in dict.fromkeys(required):
+            # MimIR MODULE plugins use .so on Darwin too (CMake's MODULE suffix).
             for suffix in ['.mim','.so']:
                 path=self.plugin_dir/(name+suffix if suffix=='.mim' else 'libmim_'+name+suffix)
                 if not path.is_file():raise ValueError(f'Missing MimIR plugin: {path}')
         # Include all built plugins/imports: transitive lowering dependencies affect generated code.
         paths.extend(sorted(self.plugin_dir.glob('*.mim')))
         paths.extend(sorted(self.plugin_dir.glob('libmim_*.so')))
-        self.target_flags=[f.format(mcpu=self.bench['mcpu']) for f in self.settings['target_flags'] if self.bench['mcpu']!='generic' or '{mcpu}' not in f]
+        self.target_flags=[]
+        for flag in self.settings['target_flags']:
+            if flag == 'auto':self.target_flags.extend(target_flags(self.bench['mcpu']))
+            elif self.bench['mcpu']!='generic' or '{mcpu}' not in flag:self.target_flags.append(flag.format(mcpu=self.bench['mcpu']))
         git=subprocess.run(['git','-C',str(self.source),'rev-parse','HEAD'],capture_output=True,text=True)
         self.metadata=dict(variant=self.settings['variant'],mimir=subprocess.check_output([str(self.binary),'--version'],text=True).strip(),
                            mimir_git=git.stdout.strip() if git.returncode==0 else None,mimir_checkout=self.checkout_state,mimir_source=str(self.source),mimir_binary=str(self.binary),
@@ -52,7 +61,13 @@ class MimIR:
         self.artifacts=config.get('artifacts',{})
 
     def prepare(self, case, a, b, work, previous):
-        source=work/'kernel.mim';source.write_text(module(case))
+        layout=self.settings.get('linear_weight_layout','kn') if case['op']=='linear' else 'kn'
+        if layout not in ('kn','nk'):raise ValueError('mimir.linear_weight_layout must be kn or nk')
+        prepack=dict(prepack_s=0.0,weight_layout='KN (no prepack)') if case['op']=='linear' else {}
+        if layout=='nk':
+            start=time.perf_counter();b=np.ascontiguousarray(b.T)
+            prepack=dict(prepack_s=time.perf_counter()-start,weight_layout='NK (transposed once)')
+        source=work/'kernel.mim';source.write_text(module(case,layout))
         raw=work/'kernel.ll';raw.unlink(missing_ok=True)
         command=[str(self.binary),'-P',str(self.plugin_dir),*self.settings['compiler_flags'],'-p',self.settings['plugins'][0],str(source)]
         for plugin in self.settings['plugins'][1:]:command.extend(['-p',plugin])
@@ -62,11 +77,13 @@ class MimIR:
         start=time.perf_counter()
         with (work/'mimir_compile.log').open('w') as log:subprocess.run(command,cwd=work,stdout=log,stderr=subprocess.STDOUT,check=True)
         if not raw.is_file():raise RuntimeError(f'MimIR did not emit {raw}; see mimir_compile.log')
-        wrapper=Path(__file__).with_name('native_timer.cpp');library=work/'kernel.so'
-        command=[self.clang,*self.settings['compile_flags'],*self.target_flags,str(raw),str(wrapper),'-o',str(library)]
+        wrapper=Path(__file__).with_name('native_timer.cpp');library=work/('kernel'+shared_suffix())
+        command=[self.clang,*self.settings['compile_flags'],*self.target_flags,*linker_flags(),str(raw),str(wrapper),'-o',str(library)]
         (work/'clang_command.json').write_text(json.dumps(command,indent=2))
         with (work/'clang_compile.log').open('w') as log:subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
-        return Kernel(library,a,b,tensor_shapes(case)[2],work,time.perf_counter()-start,self.clang,self.settings['compile_flags'],self.target_flags)
+        kernel=Kernel(library,a,b,tensor_shapes(case)[2],work,time.perf_counter()-start,self.clang,self.settings['compile_flags'],self.target_flags)
+        kernel.details.update(prepack)
+        return kernel
 
 
 class Kernel:
@@ -98,7 +115,7 @@ class Kernel:
         return seconds
 
     def dump(self, destination):
-        for name in ['kernel.mim','final.mim','kernel.ll','kernel.so','mimir_command.json','clang_command.json','mimir_compile.log','clang_compile.log']:
+        for name in ['kernel.mim','final.mim','kernel.ll','kernel'+shared_suffix(),'mimir_command.json','clang_command.json','mimir_compile.log','clang_compile.log']:
             shutil.copy2(self.work/name,destination/name)
         shutil.copy2(Path(__file__).with_name('native_timer.cpp'),destination/'native_timer.cpp')
         flags=[f for f in self.flags if f!='-shared']
@@ -109,4 +126,4 @@ class Kernel:
         return dict(notes='MimIR source and final MimIR IR, lowered/Clang-optimized LLVM IR, assembly and the measured shared library. Native timing includes output/internal allocation and free, following the tensor extern ABI in PR #1.')
 
 
-if __name__=='__main__':run('mimir',MimIR)
+if __name__=='__main__':run(os.environ.get('GEMM_BACKEND_NAME','mimir'),MimIR)

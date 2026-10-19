@@ -4,12 +4,16 @@ import os
 from pathlib import Path
 import tomllib
 from .cases import select_cases
+from .host import available_cpus, bind_cpu, configure_host, resolve_mcpu, is_macos
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(path):
-    return tomllib.loads(Path(path).resolve().read_text())
+    config = tomllib.loads(Path(path).resolve().read_text())
+    if 'benchmark' in config and 'openblas' in config:
+        configure_host(config)
+    return config
 
 
 def environment(config):
@@ -21,7 +25,7 @@ def environment(config):
 
 
 def resolve_cpu(parser, cpu=None, allowed_cpus=None):
-    allowed_cpus = os.sched_getaffinity(0) if allowed_cpus is None else allowed_cpus
+    allowed_cpus = available_cpus() if allowed_cpus is None else allowed_cpus
     if cpu is None:
         return min(allowed_cpus)
     if cpu not in allowed_cpus:
@@ -31,8 +35,8 @@ def resolve_cpu(parser, cpu=None, allowed_cpus=None):
 
 
 def resolve_runner_cpus(parser, config, backends, cpu=None, overrides=None, allowed_cpus=None):
-    allowed_cpus=os.sched_getaffinity(0) if allowed_cpus is None else allowed_cpus
-    names={'pytorch','tvm','iree','openblas','mimir'}
+    allowed_cpus=available_cpus() if allowed_cpus is None else allowed_cpus
+    names={'pytorch','tvm','iree','openblas','mimir','mimir-par'}
     configured=config.get('runner_cpus',{})
     if not isinstance(configured,dict) or set(configured)-names or any(type(c) is not int for c in configured.values()):
         parser.error('[runner_cpus] requires known runner names and integer CPU IDs')
@@ -57,6 +61,7 @@ def parse_args(backend):
     config = load(os.environ.get('GEMM_COMMON_CONFIG', ROOT/'config/common.toml'))
     settings = load(os.environ.get('GEMM_BACKEND_CONFIG', ROOT/f'config/{backend}.toml')) if backend != 'openblas' else {'openblas':config['openblas'].copy()}
     if backend=='mimir':
+        # Overrides target upstream MimIR only; mimir-par keeps its configured fork.
         for key in ['remote','ref']:
             if 'GEMM_MIMIR_'+key.upper() in os.environ:settings['mimir'][key]=os.environ['GEMM_MIMIR_'+key.upper()]
     bench = config['benchmark'].copy()
@@ -79,7 +84,7 @@ def parse_args(backend):
         parser.add_argument('--trials', type=int, default=settings['tvm']['auto_tune']['trials'])
     args = parser.parse_args()
     config['build']={'directory':str(args.build_dir.resolve())}
-    allowed_cpus=os.sched_getaffinity(0)
+    allowed_cpus=available_cpus()
     args.cpu=resolve_runner_cpus(parser,config,[backend],args.cpu,args.runner_cpus,allowed_cpus)[backend]
     config['threads']['TVM_BIND_THREADS']=os.environ.get('TVM_BIND_THREADS','0')
     config['execution']={'parallel':os.environ.get('GEMM_RUN_PARALLEL')=='1',
@@ -92,7 +97,8 @@ def parse_args(backend):
         cases = select_cases(bench,args.shapes,args.cases_file,args.cases,args.reps,ROOT,args.ops)
     except ValueError as exc:
         parser.error(str(exc))
-    bench.update(device=args.device,cpu=args.cpu,allowed_cpus=sorted(allowed_cpus),mcpu=args.mcpu,
+    bench.update(device=args.device,cpu=args.cpu,allowed_cpus=sorted(allowed_cpus),mcpu=resolve_mcpu(args.mcpu),
+                 cpu_selection='runner slot; not a core pin' if is_macos() else 'logical CPU affinity',
                  shapes=[case['shape'] for case in cases],cases=cases,
                  reps_policy='minimum native calls per batch; adaptive timing may run more')
     if min(bench['repeats'],bench['min_repeat_ms']) < 1 or bench['warmup'] < 0:
@@ -118,7 +124,7 @@ def parse_args(backend):
     artifacts['directory'] = str(args.dump_dir.resolve() if args.dump_dir else args.output.resolve()/artifacts.get('subdirectory', 'artifacts'))
     config['artifacts'] = artifacts
     config['benchmark'] = bench
-    os.sched_setaffinity(0,{args.cpu})
+    bind_cpu(args.cpu)
     return args,config,settings,cases
 
 

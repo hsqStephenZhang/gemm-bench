@@ -19,6 +19,8 @@ def repository(path):
     call('git','init','-b','master',str(path))
     call('git','-C',str(path),'config','user.email','test@example.invalid')
     call('git','-C',str(path),'config','user.name','Benchmark test')
+    call('git','-C',str(path),'config','commit.gpgsign','false')
+    call('git','-C',str(path),'config','core.hooksPath','/dev/null')
     (path/'value.txt').write_text('master\n')
     call('git','-C',str(path),'add','value.txt');call('git','-C',str(path),'commit','-m','master')
     master=git(path,'rev-parse','HEAD')
@@ -63,13 +65,13 @@ class MimIR(unittest.TestCase):
     def test_remote_ref_and_build_overrides_reach_check_entrypoint(self):
         spec=importlib.util.spec_from_file_location('entry',ROOT/'run.py');entry=importlib.util.module_from_spec(spec);spec.loader.exec_module(entry)
         flags=['run.py','--backends','mimir','--mimir-remote','owner/repo','--mimir-ref','feature','--build-dir','/tmp/mimir-test-build','--check']
-        with patch.object(sys,'argv',flags),patch.object(entry.subprocess,'run') as run:
+        with patch.object(sys,'argv',flags),patch('common.host.cpu_model',return_value='Apple M2 Pro'),patch.object(entry.subprocess,'run') as run:
             entry.main()
         commands=[c.args[0] for c in run.call_args_list]
         self.assertEqual(len(commands),2)
         mimir=commands[-1]
         for option,value in [('--remote','owner/repo'),('--ref','feature'),('--build-dir','/tmp/mimir-test-build')]:
-            self.assertEqual(mimir[mimir.index(option)+1],value)
+            self.assertEqual(mimir[mimir.index(option)+1],str(Path(value).resolve()) if option=='--build-dir' else value)
         self.assertIn('--check',mimir)
 
 

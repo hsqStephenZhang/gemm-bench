@@ -1,8 +1,8 @@
-"""Named CPU cases: GEMM M K N, GEMV M K, Conv2D N Cin H W Cout KH KW stride pad."""
+"""Named CPU cases: GEMM/linear M K N, GEMV M K, Conv2D N Cin H W Cout KH KW stride pad."""
 from pathlib import Path
 from .operators import tensor_shapes
 
-OPS = ('gemm','gemv','conv2d')
+OPS = ('gemm','gemv','conv2d','linear')
 
 
 def load_cases(path):
@@ -12,9 +12,9 @@ def load_cases(path):
         if not fields:
             continue
         op = 'conv2d' if fields[0]=='conv' else fields[0]
-        count = {'gemm':6,'gemv':5,'conv2d':12}.get(op)
+        count = {'gemm':6,'linear':6,'gemv':5,'conv2d':12}.get(op)
         if count is None or len(fields)!=count:
-            raise ValueError(f'{path}:{number}: expected gemm name M K N reps, gemv name M K reps, or conv2d name N Cin H W Cout KH KW stride pad reps')
+            raise ValueError(f'{path}:{number}: expected gemm/linear name M K N reps, gemv name M K reps, or conv2d name N Cin H W Cout KH KW stride pad reps')
         name = fields[1]
         try:
             values = list(map(int,fields[2:]))
@@ -23,7 +23,7 @@ def load_cases(path):
         dims,reps = values[:-1],values[-1]
         if reps<1 or min(dims[:-1] if op=='conv2d' else dims)<1 or (op=='conv2d' and dims[-1]<0) or name in names:
             raise ValueError(f'{path}:{number}: positive dimensions/reps, nonnegative pad and unique names required')
-        if op=='gemm':
+        if op in ('gemm','linear'):
             m,k,n=dims;dims=[m,n,k]
         case=dict(op=op,name=name,shape=dims,reps=reps)
         if min(tensor_shapes(case)[2])<1:
@@ -39,7 +39,7 @@ def select_cases(bench, shapes=None, case_file=None, names=None, reps=None, root
     if requested_ops==['all']:
         requested_ops=list(OPS)
     if not requested_ops or len(set(requested_ops))!=len(requested_ops) or any(op not in OPS for op in requested_ops):
-        raise ValueError('--ops accepts gemm,gemv,conv2d (comma-separated) or all')
+        raise ValueError('--ops accepts gemm,gemv,conv2d,linear (comma-separated) or all')
     if shapes and (names or case_file):
         raise ValueError('--shapes cannot be combined with --cases or --cases-file')
     if shapes:

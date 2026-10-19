@@ -1,0 +1,16 @@
+# linear name M K N reps: Y[M,N] = X[M,K] @ W[K,N] with W frozen (LLM projection weights).
+# Backends may repack W once outside timing; M is the token batch (1 = decode, larger = prefill).
+# Llama-2-7B projections: attention out (4096->4096), MLP up/gate (4096->11008), MLP down (11008->4096).
+linear l7b_o_m1       1    4096   4096    20
+linear l7b_o_m16      16   4096   4096    5
+linear l7b_o_m128     128  4096   4096    2
+linear l7b_up_m1      1    4096   11008   5
+linear l7b_up_m16     16   4096   11008   2
+linear l7b_up_m128    128  4096   11008   1
+linear l7b_down_m1    1    11008  4096    5
+linear l7b_down_m16   16   11008  4096    2
+linear l7b_down_m128  128  11008  4096    1
+# TinyLlama-1.1B: fused QKV (2048->2560) and MLP up/gate (2048->5632).
+linear tl_qkv_m1      1    2048   2560    50
+linear tl_qkv_m32     32   2048   2560    10
+linear tl_up_m32      32   2048   5632    5

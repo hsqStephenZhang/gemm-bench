@@ -14,7 +14,7 @@ from common.config import ROOT,parse_args,resolve_cpu
 class Affinity(unittest.TestCase):
     def test_resolve_default_and_explicit_cpu(self):
         parser=argparse.ArgumentParser()
-        with patch('common.config.os.sched_getaffinity',return_value={7,3}):
+        with patch('common.config.available_cpus',return_value={7,3}):
             self.assertEqual(resolve_cpu(parser),3)
             self.assertEqual(resolve_cpu(parser,7),7)
             with contextlib.redirect_stderr(io.StringIO()) as out,self.assertRaises(SystemExit) as exc:
@@ -24,9 +24,9 @@ class Affinity(unittest.TestCase):
 
     def parse(self, backend='pytorch',flags=(),allowed=(3,7),common=None,settings=None):
         env=dict(GEMM_COMMON_CONFIG=str(common or ROOT/'config/common.toml'),GEMM_BACKEND_CONFIG=str(settings or ROOT/f'config/{backend}.toml'))
-        with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--cases','mv_pack',*flags]),patch('common.config.os.sched_getaffinity',return_value=set(allowed)),patch('common.config.os.sched_setaffinity') as pin:
+        with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--cases','mv_pack',*flags]),patch('common.config.available_cpus',return_value=set(allowed)),patch('common.config.bind_cpu') as pin:
             result=parse_args(backend)
-            pin.assert_called_once_with(0,{result[0].cpu})
+            pin.assert_called_once_with(result[0].cpu)
         return result
 
     def test_shared_parser_selects_allowed_cpu_and_records_mask(self):
@@ -46,7 +46,7 @@ class Affinity(unittest.TestCase):
 
     def test_unavailable_cpu_fails_before_pin(self):
         env=dict(GEMM_COMMON_CONFIG=str(ROOT/'config/common.toml'),GEMM_BACKEND_CONFIG=str(ROOT/'config/pytorch.toml'))
-        with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--cpu','0']),patch('common.config.os.sched_getaffinity',return_value={3,7}),patch('common.config.os.sched_setaffinity') as pin,contextlib.redirect_stderr(io.StringIO()) as out,self.assertRaises(SystemExit) as exc:
+        with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--cpu','0']),patch('common.config.available_cpus',return_value={3,7}),patch('common.config.bind_cpu') as pin,contextlib.redirect_stderr(io.StringIO()) as out,self.assertRaises(SystemExit) as exc:
             parse_args('pytorch')
         self.assertEqual(exc.exception.code,2);pin.assert_not_called()
         self.assertIn('Allowed CPUs: [3, 7]',out.getvalue())
@@ -62,7 +62,7 @@ class Affinity(unittest.TestCase):
             settings=Path(tmp)/'tvm.toml'
             settings.write_text((ROOT/'config/tvm.toml').read_text().replace('builder_cpus = []','builder_cpus = [2,4]'))
             env=dict(GEMM_COMMON_CONFIG=str(ROOT/'config/common.toml'),GEMM_BACKEND_CONFIG=str(settings))
-            with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--auto-tune']),patch('common.config.os.sched_getaffinity',return_value={3,7}),patch('common.config.os.sched_setaffinity') as pin,contextlib.redirect_stderr(io.StringIO()) as out,self.assertRaises(SystemExit):
+            with patch.dict(os.environ,env),patch.object(sys,'argv',['benchmark.py','--auto-tune']),patch('common.config.available_cpus',return_value={3,7}),patch('common.config.bind_cpu') as pin,contextlib.redirect_stderr(io.StringIO()) as out,self.assertRaises(SystemExit):
                 parse_args('tvm')
             pin.assert_not_called();self.assertIn('TVM builder CPUs [2, 4] are unavailable',out.getvalue())
 

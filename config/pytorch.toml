@@ -5,3 +5,6 @@ intraop_threads = 1
 interop_threads = 1
 compiler = "c++"
 compile_flags = ["-O3", "-shared", "-fPIC", "-std=c++20"]
+# macOS only: "accelerate" keeps the wheel's Accelerate BLAS (uses the AMX coprocessor);
+# "openblas" interposes sgemm_/sgemv_/... to OpenBLAS so only NEON CPU cores compute.
+macos_blas = "openblas"

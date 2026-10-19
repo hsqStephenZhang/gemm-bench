@@ -1,10 +1,14 @@
-"""Operator shapes, deterministic inputs and independent FP64 references."""
+"""Operator shapes, deterministic inputs and independent FP64 references.
+
+linear is GEMM with a frozen right operand: B is the weight W[K,N], known when the kernel is
+prepared, so backends may repack it once outside timing (reported as prepack_s).
+"""
 import numpy as np
 
 
 def tensor_shapes(case):
     dims = case['shape']
-    if case['op'] == 'gemm':
+    if case['op'] in ('gemm','linear'):
         m,n,k = dims
         return (m,k),(k,n),(m,n)
     if case['op'] == 'gemv':

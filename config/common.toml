@@ -3,11 +3,12 @@
 device = "cpu"
 # Omit cpu to select the lowest CPU allowed by the process affinity.
 # cpu = 0  # Optional explicit pin; unavailable CPUs produce a clear error.
-mcpu = "alderlake"
+mcpu = "native" # Resolved once to the host LLVM CPU name (apple-m2, znver3, ...) for every backend.
 seed = 42
 dtype = "float32"
 ops = ["gemm", "gemv", "conv2d"]
-cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt"]
+cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt", "config/linear_cases.txt"]
+# linear (frozen-weight GEMM) runs with --ops linear or --ops all.
 default_reps = 1
 output_root = "results"
 parallel = false
@@ -24,6 +25,7 @@ atol = 0.001
 # iree = 4
 # openblas = 6
 # mimir = 8
+# mimir-par = 10
 
 [build]
 # Persistent compiler checkouts and incremental builds.
@@ -35,9 +37,11 @@ tvm = true
 iree = true
 openblas = true
 mimir = true
+# MimIR fork with blocked/packed contractions; same adapter as mimir.
+mimir-par = true
 
 [openblas]
-library = "libopenblas.so"
+library = "auto" # Linux libopenblas.so; macOS Homebrew libopenblas.dylib.
 compiler = "cc"
 compile_flags = ["-O3", "-shared", "-fPIC"]
 link_flags = ["-lopenblas"]
@@ -45,9 +49,12 @@ link_flags = ["-lopenblas"]
 [threads]
 OPENBLAS_NUM_THREADS = "1"
 OMP_NUM_THREADS = "1"
+VECLIB_MAXIMUM_THREADS = "1"
 TVM_NUM_THREADS = "1"
 # Keep the harness CPU pin; TVM must not rebind worker 0 to CPU 0.
 TVM_BIND_THREADS = "0"
+# MimIR runtime thread pool (mem.par_for); defaults to all performance cores.
+MIM_NUM_THREADS = "1"
 
 [artifacts]
 # CLI --dump / --no-dump override this setting.

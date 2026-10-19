@@ -9,10 +9,19 @@ let R: tensor.Ring = (F32, 0:F32, math.arith.add math.mode.contract, math.arith.
 '''
 
 
-def module(case):
+def module(case, weight_layout='kn'):
     a,b,c=tensor_shapes(case)
     def tensor(shape):return '«'+', '.join(map(str,shape))+'; F32»'
-    if case['op']=='gemm':
+    if case['op']=='linear':
+        if weight_layout=='nk':b=b[::-1]  # frozen W transposed once to [N,K] (nn.Linear layout)
+        if a[0]==1:
+            # MimIR shape inference mistakes a «1, K» operand for a vector; use the same flat
+            # x[K] -> y[N] buffers as a matrix-vector contraction (identical memory layout).
+            a,c=a[1:],c[1:]
+            expression='tensor.dot_product R (1₂, 0₁, (), ()) (b, a)' if weight_layout=='nk' else 'tensor.dot_product R (0₁, 0₂, (), ()) (a, b)'
+        else:
+            expression='tensor.dot_product R (1₂, 1₂, (), ()) (a, b)' if weight_layout=='nk' else 'tensor.product_2d R (a, b)'
+    elif case['op']=='gemm':
         expression='tensor.product_2d R (a, b)'
     elif case['op']=='gemv':
         expression='tensor.dot_product R (1₂, 0₁, (), ()) (a, b)'

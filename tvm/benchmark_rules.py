@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from common.config import load, environment, resolve_cpu
 from common.cases import select_cases
 from common.operators import inputs, tensor_shapes
+from common.host import bind_cpu, shared_suffix, scheduling_metadata, is_macos, linker_flags, native_compiler
 
 
 def main():
@@ -26,7 +27,7 @@ def main():
     bench = config['benchmark']
     cpu = resolve_cpu(parser, args.cpu)
     os.environ.update(environment(config))
-    os.sched_setaffinity(0, {cpu})
+    bind_cpu(cpu)
     import numpy as np
     import tvm
     from tvm.s_tir import meta_schedule as ms
@@ -40,7 +41,7 @@ def main():
     baseline = PyTorch(config, load(ROOT/'config/pytorch.toml'))
     cases = select_cases(bench, names=args.cases, ops='gemm', root=ROOT)
     target = tvm.target.Target({'kind':'llvm', 'mcpu':bench['mcpu'], 'num-cores':1})
-    metadata = dict(tvm=tvm.__version__, target=str(target), cpu=cpu, seed=bench['seed'],
+    metadata = dict(tvm=tvm.__version__, target=str(target), cpu=None if is_macos() else cpu, scheduling=scheduling_metadata(cpu), seed=bench['seed'],
                     search_strategy=None, cost_model=None, mutator_probs={}, generations=1,
                     postprocs='from-target for both rule sets', repeats=bench['repeats'],
                     min_repeat_ms=bench['min_repeat_ms'], baseline=baseline.metadata)
@@ -92,7 +93,7 @@ def main():
                 except Exception as exc:
                     record.update(status='compile_failed', error=str(exc)); results.append(record); save(); continue
                 record['compile_s'] = time.perf_counter()-start
-                lib.export_library(str(dest/'module.so'))
+                lib.export_library(str(dest/('module'+shared_suffix())), options=linker_flags(), cc=native_compiler('c++'))
                 (dest/'kernel.ll').write_text(lib.inspect_source('ll'))
                 (dest/'kernel.s').write_text(lib.inspect_source('asm'))
                 for _ in range(bench['warmup']):

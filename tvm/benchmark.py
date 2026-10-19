@@ -6,19 +6,20 @@ import shutil
 import time
 
 import tvm
-from common.tvm_ops import module as operator_module
+from common.tvm_ops import module as operator_module, split_weight_prepack
 from common.operators import tensor_shapes
 from common.tvm_dlight import schedule as dlight_schedule
 from common.tvm_schedule_rules import schedule as llvm_schedule
 from tvm.s_tir import meta_schedule as ms
 
 from common.runner import run
+from common.host import bind_build_cpus, shared_suffix, linker_flags, native_compiler
 
 
 def builder_affinity():
     cpus = os.environ.get('GEMM_TVM_BUILDER_CPUS')
     if cpus:
-        os.sched_setaffinity(0,{int(cpu) for cpu in cpus.split(',')})
+        bind_build_cpus({int(cpu) for cpu in cpus.split(',')})
 
 
 class TVM:
@@ -87,13 +88,22 @@ class TVM:
         if self.auto_tune:
             shutil.copy2(work/'final_tir.py',work/'best_schedule.py')
             shutil.copy2(work/'final_trace.txt',work/'best_trace.txt')
+        packed_shape = None
+        if case['op']=='linear':
+            split,packed_shape = split_weight_prepack(final_mod,case)
+            if split is not None:
+                final_mod = split
+                (work/'final_tir.py').write_text(final_mod.script())
         start = time.perf_counter()
         lib = tvm.tirx.build(final_mod,target=self.target)
-        lib.export_library(str(work/'module.so'))
+        lib.export_library(str(work/('module'+shared_suffix())), options=linker_flags(), cc=native_compiler('c++'))
         details['compile_s'] = time.perf_counter()-start
         if self.auto_tune:
-            shutil.copy2(work/'module.so',work/'best.so')
-        return Kernel(lib,a,b,tensor_shapes(case)[2],work,details)
+            shutil.copy2(work/('module'+shared_suffix()),work/('best'+shared_suffix()))
+        kernel = Kernel(lib,a,b,tensor_shapes(case)[2],work,details)
+        if case['op']=='linear':
+            kernel.prepack(packed_shape)
+        return kernel
 
 
 
@@ -106,10 +116,22 @@ class Kernel:
         self.a,self.b = tvm.runtime.tensor(a),tvm.runtime.tensor(b)
         self.c = tvm.runtime.empty(shape,dtype='float32')
 
+    def prepack(self, shape):
+        """Run the split weight-layout transform once; the hot call then reads only packed B."""
+        if shape is None:
+            self.details.update(prepack_s=0.0,weight_layout='KN (schedule kept layout)')
+            return
+        packed = tvm.runtime.empty(shape,dtype='float32')
+        start = time.perf_counter()
+        self.lib['pack'](self.b,packed)
+        self.details.update(prepack_s=time.perf_counter()-start,weight_layout='packed '+'x'.join(map(str,shape)))
+        self.b = packed
+        self.scope += '; frozen W prepacked once by the split layout-rewrite function (prepack_s, first call)'
+
     def dump(self, destination):
-        names = ['final_tir.py','final_trace.txt','module.so']
+        names = ['final_tir.py','final_trace.txt','module'+shared_suffix()]
         if self.details['auto_tune']:
-            names.extend(['best_schedule.py','best_trace.txt','best.so'])
+            names.extend(['best_schedule.py','best_trace.txt','best'+shared_suffix()])
         for name in names:
             shutil.copy2(self.work/name,destination/name)
         (destination/'kernel.ll').write_text(self.lib.inspect_source('ll'))

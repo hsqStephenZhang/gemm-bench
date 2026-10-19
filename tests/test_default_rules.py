@@ -1,13 +1,14 @@
 """Default-rule candidates are generated without search or mutation."""
 import unittest
 import tvm
+from common.host import resolve_mcpu
 from tvm.s_tir import meta_schedule as ms
 from common.tvm_ops import module
 
 class DefaultRules(unittest.TestCase):
     def test_seeded_generation_has_no_search_or_mutators(self):
         mod=module(dict(op='gemm',shape=[7,13,17]))
-        target=tvm.target.Target({'kind':'llvm','mcpu':'alderlake','num-cores':1})
+        target=tvm.target.Target({'kind':'llvm','mcpu':resolve_mcpu('native'),'num-cores':1})
         for kind in ['llvm','from-target']:
             with self.subTest(kind=kind):
                 space=ms.space_generator.PostOrderApply(sch_rules=kind,postprocs='from-target',mutator_probs={})
@@ -29,7 +30,7 @@ class DefaultRules(unittest.TestCase):
         from unittest.mock import patch
         from common.operators import inputs, tensor_shapes
         from common.tvm_schedule_rules import schedule as default_schedule
-        target=tvm.target.Target({'kind':'llvm','mcpu':'alderlake','num-cores':1})
+        target=tvm.target.Target({'kind':'llvm','mcpu':resolve_mcpu('native'),'num-cores':1})
         cases=[dict(op='gemm',shape=[7,13,17]),dict(op='gemv',shape=[9,17]),
                dict(op='conv2d',shape=[1,3,9,11,5,3,2,2,1])]
         for case in cases:

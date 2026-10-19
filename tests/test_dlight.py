@@ -2,6 +2,7 @@
 import unittest
 import numpy as np
 import tvm
+from common.host import resolve_mcpu
 from common.tvm_ops import module
 from common.tvm_dlight import schedule
 from common.operators import tensor_shapes, inputs
@@ -14,7 +15,7 @@ class DLightTests(unittest.TestCase):
             a_shape,b_shape,c_shape=tensor_shapes(case)
             a=rng.uniform(-1,1,a_shape).astype('float32')
             b=rng.uniform(-1,1,b_shape).astype('float32')
-            target=tvm.target.Target({'kind':'llvm','mcpu':'alderlake','num-cores':1})
+            target=tvm.target.Target({'kind':'llvm','mcpu':resolve_mcpu('native'),'num-cores':1})
             mod,trace,rule=schedule(module(case),target,case)
             self.assertIn('vectorize',trace)
             self.assertEqual(rule,'upstream.cpu.GEMV' if op=='gemv' else 'project.cpu.SpatialReduction')
@@ -26,7 +27,7 @@ class DLightTests(unittest.TestCase):
     def test_padded_convolution_with_vector_tail(self):
         case = dict(op='conv2d',shape=[1,3,9,11,5,3,2,2,1])
         a,b,reference = inputs(case,5)
-        target = tvm.target.Target({'kind':'llvm','mcpu':'alderlake','num-cores':1})
+        target = tvm.target.Target({'kind':'llvm','mcpu':resolve_mcpu('native'),'num-cores':1})
         mod,trace,rule = schedule(module(case),target,case)
         self.assertEqual(rule,'project.cpu.SpatialReduction')
         self.assertIn('vectorize',trace)
