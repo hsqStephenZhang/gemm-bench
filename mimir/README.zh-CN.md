@@ -54,7 +54,7 @@ CLI 优先于配置。切换 ref、remote 或编译选项时使用新的结果�
 
 GEMM 使用 `tensor.product_2d`；GEMV 使用 `tensor.dot_product`，输入和输出都是真正的一维向量；Conv2D 使用 `tensor.conv`，输入 NCHW、权重 OIHW，无 bias，groups=1、dilation=1，stride/pad 来自用例。卷积尺寸显式传参，避免 singleton axis 的隐式推导歧义。
 
-各用例生成 MimIR 源码，经 `opt` 和 `ll` plugin 输出 LLVM IR，再与原生 C++ 计时包装器编译为动态库。默认 clang 使用 `-O3` 和 `-march=<benchmark.mcpu>`，与公共 CPU target 一致。`mcpu=generic` 时不添加 CPU 专属模板标志；其他架构可修改 `target_flags`。
+各用例生成 MimIR 源码，经 `opt` 和 `ll` plugin 输出 LLVM IR，再与原生 C++ 计时包装器编译为动态库。默认 clang 使用 `-O3`，ARM 使用 `-mcpu=<benchmark.mcpu>`，x86 使用 `-march=<benchmark.mcpu>`，与公共 CPU target 一致。`mcpu=generic` 时不添加 CPU 专属模板标志；其他架构可修改 `target_flags`。
 
 tensor extern 返回 malloc 分配的结果。原生计时每次包含算子、输出/内部内存分配及 free；校验结果复制到 NumPy 缓冲区发生在计时之外。PyTorch GEMM/GEMV 输出预分配，Conv2D 包含框架分配；结果明确记录双方范围。不进行 Python 开销扣减。
 

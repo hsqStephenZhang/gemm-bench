@@ -1,0 +1,121 @@
+# Compare a MimIR candidate against a baseline with gemm-bench (see eval/mimir.toml).
+# Triggers: a push that changes eval/mimir.toml, or a manual run (Actions tab / `gh workflow run`).
+#
+# Runner: GitHub-hosted ubuntu-26.04 by default (shared VMs: fine for correctness and large
+# differences, noisy for small ones). For stable numbers register a self-hosted runner and set
+# repository variables:
+#   GEMM_BENCH_RUNS_ON = ["self-hosted","gemm-bench"]   (JSON labels)
+#   GEMM_BENCH_CPU     = 4                               (measurement CPU; keep its SMT sibling idle)
+# This repository is public: the workflow deliberately has no pull_request trigger, so code from
+# forks never runs on a self-hosted machine.
+name: MimIR eval
+
+on:
+  push:
+    paths: [eval/mimir.toml]
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Override [candidate].ref (commit SHA, branch or tag)
+        required: false
+      candidate_remote:
+        description: Override [candidate].remote (owner/repo or URL)
+        required: false
+      baseline_ref:
+        description: Override [baseline].ref
+        required: false
+      ops:
+        description: Override [run].ops (gemm,gemv,conv2d,linear or all)
+        required: false
+      cases:
+        description: Override [run].cases (comma-separated names)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # One benchmark at a time per machine; queued runs wait instead of competing for the core.
+  group: mimir-eval-${{ vars.GEMM_BENCH_RUNS_ON || 'github-hosted' }}
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ${{ fromJSON(vars.GEMM_BENCH_RUNS_ON || '"ubuntu-26.04"') }}
+    timeout-minutes: 360
+    env:
+      OUTPUT: results/mimir-eval-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        # MimIR needs C++23 with gcc-15's libstdc++ (ubuntu-26.04) and clang for its LLVM runtime.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang clang-20 ninja-build
+          echo "CC=clang-20" >> "$GITHUB_ENV"
+          echo "CXX=clang++-20" >> "$GITHUB_ENV"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      - name: Choose build directory
+        # Self-hosted: a persistent directory outside the workspace, so MimIR rebuilds incrementally.
+        # GitHub-hosted: the workspace, restored from the Actions cache below.
+        run: |
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            echo "BUILD_DIR=$GITHUB_WORKSPACE/build" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_DIR=$RUNNER_TOOL_CACHE/gemm-bench-build" >> "$GITHUB_ENV"
+          fi
+
+      - name: Restore MimIR builds (GitHub-hosted)
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: mimir-build-${{ runner.os }}-${{ hashFiles('eval/mimir.toml') }}-${{ github.run_id }}
+          restore-keys: mimir-build-${{ runner.os }}-
+
+      - name: Evaluate
+        env:
+          # Inputs go through the environment, never interpolated into the script.
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          CANDIDATE_REMOTE: ${{ inputs.candidate_remote }}
+          BASELINE_REF: ${{ inputs.baseline_ref }}
+          OPS: ${{ inputs.ops }}
+          CASES: ${{ inputs.cases }}
+          CPU: ${{ vars.GEMM_BENCH_CPU }}
+        run: |
+          args=(--output "$OUTPUT" --build-dir "$BUILD_DIR")
+          [ -n "$CANDIDATE_REF" ] && args+=(--candidate-ref "$CANDIDATE_REF")
+          [ -n "$CANDIDATE_REMOTE" ] && args+=(--candidate-remote "$CANDIDATE_REMOTE")
+          [ -n "$BASELINE_REF" ] && args+=(--baseline-ref "$BASELINE_REF")
+          [ -n "$OPS" ] && args+=(--ops "$OPS")
+          [ -n "$CASES" ] && args+=(--cases "$CASES")
+          [ -n "$CPU" ] && args+=(--cpu "$CPU")
+          uv run --frozen python mimir_eval.py "${args[@]}"
+
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f "$OUTPUT/report.md" ]; then cat "$OUTPUT/report.md" >> "$GITHUB_STEP_SUMMARY"
+          else echo "No report produced; see the Evaluate step log." >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimir-eval-${{ github.run_id }}
+          path: |
+            ${{ env.OUTPUT }}/report.md
+            ${{ env.OUTPUT }}/comparison.csv
+            ${{ env.OUTPUT }}/summary.csv
+            ${{ env.OUTPUT }}/configs/
+            ${{ env.OUTPUT }}/*/results.json
+            ${{ env.OUTPUT }}/*/*/mimir_compile.log
+          if-no-files-found: warn

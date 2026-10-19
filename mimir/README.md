@@ -54,7 +54,7 @@ CLI options override the config. Use a fresh results directory when changing the
 
 GEMM uses `tensor.product_2d`. GEMV uses `tensor.dot_product` with a genuine one-dimensional vector input and output. Conv2D uses `tensor.conv`: NCHW inputs, OIHW weights, no bias, groups=1, dilation=1, and the case's stride/padding. Convolution extents are passed explicitly to avoid singleton-axis inference ambiguity.
 
-Each case produces MimIR source, runs the `opt` and `ll` plugins, and compiles the emitted LLVM IR plus a native C++ wrapper into a shared library. The default clang flags are `-O3` and `-march=<benchmark.mcpu>`, matching the shared CPU target. With `mcpu=generic`, no CPU-specific template flag is added. Override `target_flags` for other architectures or targets.
+Each case produces MimIR source, runs the `opt` and `ll` plugins, and compiles the emitted LLVM IR plus a native C++ wrapper into a shared library. The default clang flags are `-O3` and `-mcpu=<benchmark.mcpu>` on ARM / `-march=<benchmark.mcpu>` on x86, matching the shared CPU target. With `mcpu=generic`, no CPU-specific template flag is added. Override `target_flags` for other architectures or targets.
 
 The tensor extern returns a malloc-owned result. Native timing includes the operator, output/internal allocation, and freeing the result on every call. Correctness copies into a NumPy buffer happen outside timing. PyTorch preallocates GEMM/GEMV outputs, while its Conv2D timing includes framework allocation; both timing scopes are recorded. No Python-overhead subtraction is applied.
 

@@ -31,13 +31,14 @@ TVM 使用 `uv add apache-tvm` 安装的 wheel，版本由 `uv.lock` 锁定；�
 ```toml
 [benchmark]
 ops = ["gemm", "gemv", "conv2d"]
-cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt"]
+cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt", "config/linear_cases.txt"]
 
 [backends]
 tvm = true
 iree = true
 openblas = true
 mimir = true
+mimir-par = true
 ```
 
 `--backends`（同义参数 `--backend`）覆盖可选后端配置，支持任意组合、`all`、`none`。PyTorch 自动运行，不能关闭，不加入可选列表。`--ops gemm,gemv` 覆盖 `benchmark.ops`；`--cases name1,name2` 从选中算子的用例中选择；`--cases-file` 替换整套文件；旧公共配置 `cases_file` 仍可读取。
@@ -50,7 +51,7 @@ uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
 ```
 
-CPU 选择依据进程当前允许的 affinity 集合。未指定全局或 runner CPU 时，所有后端使用最小可用 CPU，不要求 CPU 0 可用。显式指定集合外的 CPU 会报错并列出允许的 CPU。统一入口在启动后端前校验，并将同一 CPU 转发给所有测量；结果同时记录实际 CPU 和原始允许集合。例如，在 CPU 2/4 可用的机器上，`taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` 自动选择 CPU 2。
+Linux CPU 选择依据进程当前允许的 affinity 集合。未指定全局或 runner CPU 时，所有后端使用最小可用 CPU，不要求 CPU 0 可用。显式指定集合外的 CPU 会报错并列出允许的 CPU。统一入口在启动后端前校验，并将同一 CPU 转发给所有测量；结果同时记录实际 CPU 和原始允许集合。例如，在 CPU 2/4 可用的机器上，`taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` 自动选择 CPU 2。
 
 ## Runner CPU 分配与并行执行
 
@@ -66,11 +67,28 @@ uv run --frozen python run.py --backends all --parallel \
   --dump --output results/full-suite
 ```
 
-使用 `TVM_BIND_THREADS=0` 关闭 TVM 自动线程绑核，避免主线程被重新绑定到 CPU 0。框架在预热后和每个计时批次后校验实际 affinity；发生偏移时停止运行，不会静默记录错误的请求 CPU。各条结果保存 `observed_affinity`。
+使用 `TVM_BIND_THREADS=0` 关闭 TVM 自动线程绑核，避免主线程被重新绑定到 CPU 0。Linux 框架在预热后和每个计时批次后校验实际 affinity；发生偏移时停止运行，不会静默记录错误的请求 CPU。各条结果保存 `observed_affinity`。
+
+## macOS Apple Silicon
+
+默认 `mcpu = "native"` 在 Apple Silicon 上解析为 `apple-m1` / `apple-m2` 等 LLVM CPU 名称；可用 `--mcpu` 覆盖。MimIR 在 ARM 上使用 `-mcpu`，在 x86 上使用 `-march`。Linux 保留严格 affinity 绑定和漂移检查。
+
+macOS 没有公开的逐核心绑核接口，Apple Silicon 不支持 Mach thread affinity policy。macOS runner 使用 `pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)`，并在预热和计时批次后检查 QoS。系统动态选择核心，不能保证使用某个性能核心，也不能保证不同 runner 位于不同物理核心。`--cpu` / `--runner-cpus` 在 macOS 上表示 runner slot；`--parallel` 未指定编号时自动分配不同 slot。结果保存 `scheduling.mode = "macos-qos"`、`strict = false`，实际 `cpu`、`baseline_cpu` 和 `observed_affinity` 为 null，CSV 单独保存 slot 和调度方式。IREE 原生计时子进程继承调度设置；QoS 检查针对 Python runner 线程。
+
+```bash
+brew install openblas llvm cmake ninja
+uv sync --locked
+uv run --frozen python run.py --backends all --ops all --parallel \
+  --no-auto-tune --output results/macos-arm-full
+```
+
+OpenBLAS 自动查找 Homebrew 的头文件和动态库；PyTorch 在 macOS 从 PyPI 安装 ARM wheel，Linux 继续使用 CPU wheel。设置 `VECLIB_MAXIMUM_THREADS=1` 限制 Accelerate 线程。原生包装器构建优先使用 Homebrew LLVM，并匹配 Command Line Tools 的 SDK/linker；MimIR 使用 Homebrew LLVM 的 C++23 编译器。IREE 默认使用 Darwin Mach-O 系统动态库，保留 data tiling 和 ukernels，避免本机 embedded ELF 模式的 ARM microkernel 崩溃。OpenBLAS 将库复制到输出目录并将 OpenMP 依赖改为 PyTorch runtime，不修改已安装的库。独立计时动态库和 dump 使用 `.dylib`，MimIR MODULE plugin 保持上游 `.so` 命名。
 
 ## MimIR remote 和 build 缓存
 
 `config/mimir.toml` 默认 `remote = "mimir/mimir"`、`ref = "master"`，可用 `--mimir-remote` / `--mimir-ref` 覆盖。首次 clone 到 `<build>/mimir/source`，之后在同一 checkout 中 fetch/切换，并在 `<build>/mimir/compiler` 增量构建。公共配置 `[build].directory` 或 CLI `--build-dir` 指定构建根目录，默认 `build`。切换实验输出目录不会产生新的 clone。MimIR 的 `--check` 也会按需准备编译器。
+
+`mimir-par` 是同一 adapter 的第二个实例，由 `config/mimir-par.toml` 配置（`hsqStephenZhang/MimIR` 的 `feature/par` 分支，带分块与打包的收缩）。配置中的 `name` 同时决定 backend 名称和 `<build>/mimir-par/` 下的 checkout，因此不会影响上游 checkout；`--mimir-remote`/`--mimir-ref` 只作用于 `mimir`，`--mimir-par-config` 可选择其他 fork 配置。该分支的运行时线程池读取 `MIM_NUM_THREADS`，`[threads]` 中设为 1。
 
 ```bash
 # 只跑上游 MimIR master 与必选 PyTorch baseline
@@ -96,9 +114,35 @@ conv2d  name N Cin H W Cout KH KW stride pad reps
 
 旧 `--shapes '64,512,130'` 仅覆盖 GEMM，顺序仍为 **M,N,K**，与文件的 M K N 不同。`--reps` 覆盖每批次最少原生调用次数，`repeats` 是批次数。最低计时窗口仍有效，实际调用次数可以超过 reps；TVM evaluator 不暴露最终自适应次数，结果为 null。
 
+## 冻结权重 GEMM（`linear`）
+
+`linear` 对应 LLM 的投影层：`Y[M,N] = X[M,K] @ W[K,N]`，W 在 prepare 时已知。用例在 `config/linear_cases.txt`（Llama-2-7B 的 attention-out/MLP-up/MLP-down 与 TinyLlama 的 QKV/MLP 形状，M = 1 对应 decode，最大 128 对应 prefill），通过 `--ops linear`（或 `--ops all`）运行。每个后端在 `prepare` 中拿到一次 W 并可以变换它；只计时输入激活 X 的调用。一次性变换耗时记为 `prepack_s`，结果布局记为 `weight_layout`。
+
+| 后端 | 冻结权重的处理方式 |
+|---|---|
+| PyTorch（基线） | eager `aten::mm.out`，W 原样传入；没有 oneDNN 时 BLAS 每次调用都会打包 W |
+| OpenBLAS | 同样调用 `cblas_sgemm`；未导出 packed-GEMM 接口，每次调用打包 W |
+| TVM | `layout_free_buffers=[1]` 让 MetaSchedule 的 `RewriteLayout` 选择打包布局；`SplitLayoutRewritePreproc` 把变换拆为 `pack`，只运行一次（首次调用，含延迟加载） |
+| IREE | W 是从 `weights.irpa` 读取的不可变 `#stream.parameter.named<"model"::"w">` 全局量；const-expr hoisting 把 data-tiling 的 pack 移到模块初始化器中。`prepack_s` 为包含初始化器的模块加载时间，`iree-benchmark-module` 在计时前完成它 |
+| MimIR、mimir-par | 没有权重预打包。`linear_weight_layout = "kn"` 原样传入 W；`"nk"` 预先转置为 `[N,K]` 并收缩最后一维。M = 1 使用扁平的矩阵-向量形式，因为 MimIR 的形状推断会把 `«1, K»` 当作向量 |
+
+`config/pytorch.toml` 中 `macos_blas = "openblas"` 通过 dyld interposer 把 PyTorch 从 Accelerate 导入的 BLAS（`sgemm_`、`sgemv_` 等）转到 OpenBLAS，使基线只使用 NEON CPU 核心而不是 AMX 协处理器；设为 `"accelerate"` 恢复 wheel 默认行为。结果中记录 `pytorch_blas` 以及每个用例被转发的调用次数。
+
+## 评估 MimIR 版本
+
+`eval/mimir.toml` 指定 `[candidate]` 与 `[baseline]` 两个 MimIR（remote + ref）以及要运行的算子/用例。`mimir_eval.py` 在各自的持久 checkout（候选为 `build/mimir-par`，基线为 `build/mimir`）中构建两者，以 `--keep-going` 在同一核心上先后运行，并生成 `report.md` 与 `comparison.csv`：每个用例给出候选 GFLOPS / 基线 GFLOPS（> 1 表示候选更快）、两侧相对各自交错测得的 PyTorch 的加速比，以及每个算子的几何平均。失败的用例记为 FAIL 而不中止运行；候选有失败时命令以 1 退出。
+
+```bash
+uv run --frozen python mimir_eval.py                                  # 使用已提交的配置
+uv run --frozen python mimir_eval.py --candidate-ref <sha> --ops gemm,linear --output results/eval-x
+uv run --frozen python mimir_eval.py --output results/eval-x --report-only   # 只重新生成报告
+```
+
+CI（`.github/workflows/mimir-eval.yml`）在 push 修改了 `eval/mimir.toml` 时，或手动触发时（`gh workflow run "MimIR eval" -f candidate_ref=<sha>`）运行同一命令；报告作为 job summary，结果作为 artifact 上传。默认使用 GitHub 托管的 `ubuntu-26.04`，噪声较大；需要稳定数据时注册 self-hosted runner，并设置仓库变量 `GEMM_BENCH_RUNS_ON`（JSON 标签，如 `["self-hosted","gemm-bench"]`）与 `GEMM_BENCH_CPU`。工作流没有 `pull_request` 触发器，fork 的代码不会在该机器上运行。
+
 ## Benchmark 方式
 
-各后端使用相同 seed 的 FP32 输入、CPU affinity 和一个运行线程。公共 NumPy FP64 实现独立校验结果；Conv2D 参考通过滑动窗口 contraction 计算。预热后与 PyTorch 交替计时 9 个原生批次，每批默认至少 100 ms，取每调用均值的中位数。Python 调用、输入加载、编译、TVM 调优和 dump 不计入耗时。
+各后端使用相同 seed 的 FP32 输入和一个运行线程。Linux 严格绑定 CPU；macOS 使用下述 QoS 调度。公共 NumPy FP64 实现独立校验结果；Conv2D 参考通过滑动窗口 contraction 计算。预热后与 PyTorch 交替计时 9 个原生批次，每批默认至少 100 ms，取每调用均值的中位数。Python 调用、输入加载、编译、TVM 调优和 dump 不计入耗时。
 
 | 后端 | GEMM | GEMV | Conv2D | 计时范围 |
 |---|---|---|---|---|

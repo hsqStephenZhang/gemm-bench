@@ -31,13 +31,14 @@ All configuration lives in `config/`. The `[benchmark]` section of `config/commo
 ```toml
 [benchmark]
 ops = ["gemm", "gemv", "conv2d"]
-cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt"]
+cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt", "config/linear_cases.txt"]
 
 [backends]
 tvm = true
 iree = true
 openblas = true
 mimir = true
+mimir-par = true
 ```
 
 `--backends` (alias: `--backend`) overrides optional backend selection. It accepts any combination, `all`, or `none`. PyTorch runs automatically and cannot be disabled; omit it from the optional list. `--ops gemm,gemv` overrides `benchmark.ops`; `--cases name1,name2` selects named cases from the chosen operators; `--cases-file` replaces the configured file list. The legacy `cases_file` setting is still supported.
@@ -50,7 +51,7 @@ uv run --frozen python iree/run.py --ops conv2d --cases conv_small
 uv run --frozen python pytorch/run.py --ops all --cases pack,mv_pack,conv_small
 ```
 
-CPU selection uses the process's allowed affinity mask. With no global or per-runner CPU specified, every backend uses the lowest allowed CPU; CPU 0 is not required. An explicit CPU outside that mask fails with the allowed CPU list. The unified entry point validates the selection before starting a backend and forwards the same CPU to all measurements. Results record both the selected CPU and the original allowed mask. For example, `taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` selects CPU 2, provided those CPUs are available.
+On Linux, CPU selection uses the process's allowed affinity mask. With no global or per-runner CPU specified, every backend uses the lowest allowed CPU; CPU 0 is not required. An explicit CPU outside that mask fails with the allowed CPU list. The unified entry point validates the selection before starting a backend and forwards the same CPU to all measurements. Results record both the selected CPU and the original allowed mask. For example, `taskset -c 2,4 uv run --frozen python run.py --backends none --cases mv_pack` selects CPU 2, provided those CPUs are available.
 
 ## Runner CPU assignments and parallel execution
 
@@ -66,11 +67,28 @@ uv run --frozen python run.py --backends all --parallel \
   --dump --output results/full-suite
 ```
 
-TVM automatic thread binding is disabled with `TVM_BIND_THREADS=0`, so it cannot reset the main thread to CPU 0. The harness verifies actual affinity after warmup and every timing batch; drift stops the run instead of silently recording the requested CPU. Each result records `observed_affinity`.
+TVM automatic thread binding is disabled with `TVM_BIND_THREADS=0`, so it cannot reset the main thread to CPU 0. On Linux, the harness verifies actual affinity after warmup and every timing batch; drift stops the run instead of silently recording the requested CPU. Each result records `observed_affinity`.
+
+## macOS Apple Silicon
+
+The default `mcpu = "native"` resolves to an LLVM CPU name such as `apple-m2` on Apple Silicon. Override it with `--mcpu`. MimIR uses `-mcpu` on ARM and `-march` on x86. Linux retains strict CPU affinity and drift checks.
+
+macOS has no public API for pinning a thread to a particular CPU, and Apple Silicon does not support Mach thread affinity policy. Darwin runners request `QOS_CLASS_USER_INTERACTIVE` with `pthread_set_qos_class_self_np` and check QoS after warmup and timing batches. The OS selects cores dynamically; performance cores and separate physical cores are not guaranteed. On macOS, `--cpu` and `--runner-cpus` identify runner slots; `--parallel` assigns distinct slots automatically if none are configured. Results record `scheduling.mode = "macos-qos"`, `strict = false`, and null actual CPU/affinity fields. CSV includes the slot and scheduling mode separately. Native IREE timing subprocesses inherit scheduling settings; QoS validation covers the Python runner thread.
+
+```bash
+brew install openblas llvm cmake ninja
+uv sync --locked
+uv run --frozen python run.py --backends all --ops all --parallel \
+  --no-auto-tune --output results/macos-arm-full
+```
+
+OpenBLAS automatically locates Homebrew headers and libraries. PyTorch uses a PyPI ARM wheel on macOS and the CPU index on Linux. `VECLIB_MAXIMUM_THREADS=1` limits Accelerate threads. Native wrapper builds use Homebrew LLVM and the matching Command Line Tools SDK/linker when available. MimIR uses Homebrew LLVM for C++23 on macOS. IREE uses Darwin Mach-O system libraries with data tiling and ukernels enabled; this avoids the observed ARM microkernel crash in embedded ELF mode. OpenBLAS copies its library into the output directory and relinks its OpenMP dependency to PyTorch’s runtime, keeping installed libraries intact. Native timing libraries and dumps use `.dylib`; MimIR MODULE plugins retain upstream `.so` names.
 
 ## MimIR remote and build cache
 
 `config/mimir.toml` defaults to `remote = "mimir/mimir"` and `ref = "master"`. Override these with `--mimir-remote` and `--mimir-ref`. The first run clones into `<build>/mimir/source`; later runs fetch/switch in the same checkout and incrementally rebuild in `<build>/mimir/compiler`. Set `[build].directory` in `config/common.toml` or use `--build-dir` (default: `build`). Changing experimental outputs does not create another clone. MimIR's `--check` also prepares the compiler when needed.
+
+`mimir-par` is a second instance of the same adapter configured by `config/mimir-par.toml` (`hsqStephenZhang/MimIR`, `feature/par`, with blocked and packed contractions). Its config `name` selects both the backend name and the checkout under `<build>/mimir-par/`, so it never touches the upstream checkout; `--mimir-remote`/`--mimir-ref` apply only to `mimir`, and `--mimir-par-config` selects another fork configuration. The branch's runtime thread pool honors `MIM_NUM_THREADS`, which `[threads]` sets to 1.
 
 ```bash
 # Only upstream MimIR master versus the required PyTorch baseline
@@ -96,9 +114,35 @@ The default suite has 32 cases: the original 16 GEMM cases, 10 GEMV cases, and 6
 
 The legacy `--shapes '64,512,130'` option overrides GEMM only and retains **M,N,K** order, unlike the M K N order in case files. `--reps` overrides the minimum native calls per timing batch; `repeats` is the number of batches. The minimum timing duration still applies, so actual calls may exceed reps. TVM's evaluator does not expose its final adaptive count; that field is null.
 
+## Frozen-weight GEMM (`linear`)
+
+`linear` models an LLM projection: `Y[M,N] = X[M,K] @ W[K,N]` where W is known when the kernel is prepared. Cases live in `config/linear_cases.txt` (Llama-2-7B attention-out/MLP-up/MLP-down and TinyLlama QKV/MLP shapes, M = 1 for decode up to 128 for prefill) and run with `--ops linear` (or `--ops all`). Each backend receives W once in `prepare` and may transform it there; only calls with the activation X are timed. The one-time transform is recorded as `prepack_s` and its result as `weight_layout` in JSON/CSV.
+
+| Backend | Frozen-weight handling |
+|---|---|
+| PyTorch (baseline) | Eager `aten::mm.out` on W as-is; without oneDNN, the BLAS packs W inside every call |
+| OpenBLAS | Same `cblas_sgemm`; no packed-GEMM API is exported, so W is packed per call |
+| TVM | `layout_free_buffers=[1]` lets MetaSchedule's `RewriteLayout` choose a packed W layout; `SplitLayoutRewritePreproc` splits the transform into `pack`, run once (first call, includes lazy load) |
+| IREE | W is an immutable `#stream.parameter.named<"model"::"w">` global read from `weights.irpa`; const-expr hoisting moves the data-tiling pack into the module initializer. `prepack_s` is module load including the initializer, which `iree-benchmark-module` runs before timing |
+| MimIR, mimir-par | No weight prepack. `linear_weight_layout = "kn"` passes W as-is; `"nk"` transposes it once to `[N,K]` and contracts the last axes. M = 1 uses the flat matrix-vector form because MimIR shape inference treats a `«1, K»` operand as a vector |
+
+`config/pytorch.toml` `macos_blas = "openblas"` routes PyTorch's Accelerate BLAS imports (`sgemm_`, `sgemv_`, ...) to OpenBLAS through a dyld interposer, so the baseline uses only NEON CPU cores instead of the AMX coprocessor; `"accelerate"` restores the wheel's default. Results record `pytorch_blas` and the routed call count per case.
+
+## Evaluating a MimIR revision
+
+`eval/mimir.toml` names a `[candidate]` and a `[baseline]` MimIR (remote + ref) and the ops/cases to run. `mimir_eval.py` builds both in their persistent checkouts (`build/mimir-par` for the candidate, `build/mimir` for the baseline), runs them back to back on the same core with `--keep-going`, and writes `report.md` and `comparison.csv`: per case, candidate GFLOPS / baseline GFLOPS (> 1 = candidate faster) with each side's speedup over its interleaved PyTorch run, plus per-op geometric means. A failing case is reported as FAIL instead of aborting; candidate failures make the command exit 1.
+
+```bash
+uv run --frozen python mimir_eval.py                                  # spec as committed
+uv run --frozen python mimir_eval.py --candidate-ref <sha> --ops gemm,linear --output results/eval-x
+uv run --frozen python mimir_eval.py --output results/eval-x --report-only   # rebuild the report
+```
+
+CI (`.github/workflows/mimir-eval.yml`) runs the same command when a push changes `eval/mimir.toml`, or manually (`gh workflow run "MimIR eval" -f candidate_ref=<sha>`); the report becomes the job summary and results are uploaded as an artifact. It uses GitHub-hosted `ubuntu-26.04` by default, which is noisy; for stable numbers register a self-hosted runner and set the repository variables `GEMM_BENCH_RUNS_ON` (JSON labels, e.g. `["self-hosted","gemm-bench"]`) and `GEMM_BENCH_CPU`. The workflow has no `pull_request` trigger, so forks never run code on that machine.
+
 ## Benchmark methods
 
-All backends use FP32 inputs generated with the same seed, the same CPU affinity, and one execution thread. A shared NumPy FP64 implementation independently checks correctness; the Conv2D reference contracts sliding windows with the weights. After warmup, each backend is measured alternately with PyTorch for nine native batches, each lasting at least 100 ms by default. Results use the median of per-call batch averages. Python calls, input loading, compilation, TVM tuning, and artifact export are excluded from timing.
+All backends use FP32 inputs generated with the same seed and one execution thread (strict CPU affinity on Linux, QoS scheduling on macOS). A shared NumPy FP64 implementation independently checks correctness; the Conv2D reference contracts sliding windows with the weights. After warmup, each backend is measured alternately with PyTorch for nine native batches, each lasting at least 100 ms by default. Results use the median of per-call batch averages. Python calls, input loading, compilation, TVM tuning, and artifact export are excluded from timing.
 
 | Backend | GEMM | GEMV | Conv2D | Timing scope |
 |---|---|---|---|---|

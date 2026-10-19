@@ -1,0 +1,17 @@
+# What `mimir_eval.py` (and the "MimIR eval" CI workflow) compares.
+# To request an evaluation: edit [candidate] (usually just `ref`) on a branch and push.
+# Prefer commit SHAs; branch names are resolved at run time and the resolved SHA is reported.
+
+[candidate]
+remote = "hsqStephenZhang/MimIR"
+ref = "c56d58681549d478afd893ed5b8915d2bfbda979" # feature/par
+label = "feature/par"
+
+[baseline]
+remote = "mimir/mimir"
+ref = "2d21e0d44f9bf124376c0ea033d90148049c0837" # last upstream master that compiles every operator here
+label = "upstream 2d21e0d44"
+
+[run]
+ops = "all"   # gemm,gemv,conv2d,linear or all
+cases = ""    # optional comma-separated case names; empty = every case of the selected ops
