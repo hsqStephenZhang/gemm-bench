@@ -3,15 +3,18 @@
 # Prefer commit SHAs; branch names are resolved at run time and the resolved SHA is reported.
 
 [candidate]
-remote = "hsqStephenZhang/MimIR"
-ref = "c56d58681549d478afd893ed5b8915d2bfbda979" # feature/par
-label = "feature/par"
+remote = "mimir/mimir"
+ref = "277874c4756a0114e4ce1d9d4f88486603236e7c" # feature/omp: omp plugin, map_reduce nests on OpenMP threads
+label = "feature/omp"
 
 [baseline]
 remote = "mimir/mimir"
-ref = "2d21e0d44f9bf124376c0ea033d90148049c0837" # last upstream master that compiles every operator here
-label = "upstream 2d21e0d44"
+ref = "7115ffac2bac0e13f06e47f220bc42748c3614d0" # parent of feature/omp, so only the omp plugin differs
+label = "feature/omp parent"
 
 [run]
 ops = "all"   # gemm,gemv,conv2d,linear or all
 cases = ""    # optional comma-separated case names; empty = every case of the selected ops
+tags = []     # optional tag groups, e.g. ["gemm,irregular", "linear,!large"] (see run.py --list-cases)
+shape = []    # optional ad-hoc cases instead of the case files, e.g. ["gemm:49,4608,512"]
+threads = 4   # threads for every backend; MimIR uses its omp plugin when the build has one

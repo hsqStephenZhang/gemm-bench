@@ -26,7 +26,7 @@ TVM 使用 `uv add apache-tvm` 安装的 wheel，版本由 `uv.lock` 锁定；�
 
 ## 公共配置和选择规则
 
-所有配置集中在 `config/`。`config/common.toml` 的 `[benchmark]` 设置 `device`、CPU affinity、单线程、seed、dtype、用例文件、预热、测量轮数和误差容限。当前只实现 CPU；`--device gpu` 明确报错。
+所有配置集中在 `config/`。`config/common.toml` 的 `[benchmark]` 设置 `device`、CPU affinity、线程数、seed、dtype、用例文件、预热、测量轮数和误差容限。当前只实现 CPU；`--device gpu` 明确报错。
 
 ```toml
 [benchmark]
@@ -38,7 +38,6 @@ tvm = true
 iree = true
 openblas = true
 mimir = true
-mimir-par = true
 ```
 
 `--backends`（同义参数 `--backend`）覆盖可选后端配置，支持任意组合、`all`、`none`。PyTorch 自动运行，不能关闭，不加入可选列表。`--ops gemm,gemv` 覆盖 `benchmark.ops`；`--cases name1,name2` 从选中算子的用例中选择；`--cases-file` 替换整套文件；旧公共配置 `cases_file` 仍可读取。
@@ -88,7 +87,7 @@ OpenBLAS 自动查找 Homebrew 的头文件和动态库；PyTorch 在 macOS 从 
 
 `config/mimir.toml` 默认 `remote = "mimir/mimir"`、`ref = "master"`，可用 `--mimir-remote` / `--mimir-ref` 覆盖。首次 clone 到 `<build>/mimir/source`，之后在同一 checkout 中 fetch/切换，并在 `<build>/mimir/compiler` 增量构建。公共配置 `[build].directory` 或 CLI `--build-dir` 指定构建根目录，默认 `build`。切换实验输出目录不会产生新的 clone。MimIR 的 `--check` 也会按需准备编译器。
 
-`mimir-par` 是同一 adapter 的第二个实例，由 `config/mimir-par.toml` 配置（`hsqStephenZhang/MimIR` 的 `feature/par` 分支，带分块与打包的收缩）。配置中的 `name` 同时决定 backend 名称和 `<build>/mimir-par/` 下的 checkout，因此不会影响上游 checkout；`--mimir-remote`/`--mimir-ref` 只作用于 `mimir`，`--mimir-par-config` 可选择其他 fork 配置。该分支的运行时线程池读取 `MIM_NUM_THREADS`，`[threads]` 中设为 1。
+任何 fork 或分支都只是另一个 remote/ref，例如 `--mimir-remote hsqStephenZhang/MimIR --mimir-ref feature/par`；需要同时保留多个 MimIR 构建时使用不同的 `--build-dir`。
 
 ```bash
 # 只跑上游 MimIR master 与必选 PyTorch baseline
@@ -101,18 +100,32 @@ uv run --frozen python run.py --backends mimir --mimir-ref master \
 
 ```text
 # GEMM: A[M,K] @ B[K,N] -> C[M,N]
-gemm    name M K N reps
+gemm    name M K N reps   [tags=family,...]
 # GEMV: A[M,K] @ x[K] -> y[M]，真实向量输出
-gemv    name M K reps
+gemv    name M K reps     [tags=family,...]
 # Conv2D: NCHW input, OIHW weight
-conv2d  name N Cin H W Cout KH KW stride pad reps
+conv2d  name N Cin H W Cout KH KW stride pad reps [tags=family,...]
+# 冻结权重 GEMM（config/linear_cases.txt）
+linear  name M K N reps   [tags=family,...]
 ```
 
 `conv` 是 `conv2d` 的别名。Conv2D 为 cross-correlation，无 bias，groups=1、dilation=1；stride/pad 同时应用于 H/W，pad 可以为 0。输出为 `[N,Cout,(H+2*pad-KH)//stride+1,(W+2*pad-KW)//stride+1]`。非方形 kernel、非 2 的幂尺寸都支持。尺寸/reps 必须为正，输出不能为空，用例名称跨文件唯一。
 
-默认套件共 32 组：原 16 组 GEMM、10 组 GEMV、6 组 Conv2D。GEMV 包括 1000/2048、513×2047、8×2304、64×130；Conv2D 包括 `conv_small`（非方形 kernel、stride=2、pad=1）、`conv_1x1`、`r18_c1`、`r18_1x1`、`r18_s2`、`vgg_c1`。
+套件共 63 组（GEMM 22、GEMV 13、Conv2D 11、linear 17；默认 `ops` 不含 `linear`）。每个用例都带有算子标签、按 FP32 工作集（A+B+C）划分的**规模**标签：`small` ≤ 1 MiB、`medium` ≤ 32 MiB、`large` 更大；以及**规整性**标签：所有分块维度（GEMM/linear 的 M、N、K；GEMV 的 M、K；Conv2D 的输出通道、输出像素数和 Cin·KH·KW）都是 16 的倍数时为 `regular`，否则为 `irregular`，M = 1 另加 `vector`。用例文件还可添加类别标签（`square`、`skinny`、`short-k`、`prime`、`odd-m`、`resnet`、`vgg`、`llm`、`llama2-7b`、`tinyllama` 等）。每种 算子 × 规模 × 规整性 组合至少有一个用例，包括 M 为奇数的情况，如 ResNet-50 stage 5 的 49 像素 GEMM 和 7×7 卷积。
+
+```bash
+uv run --frozen python run.py --list-cases --ops all --tags irregular,small      # 查看选中的用例
+uv run --frozen python run.py --backends all --ops all --tags gemm,irregular --tags linear,!large
+uv run --frozen python run.py --backends mimir --shape gemm:49,4608,512 --shape conv2d:1,512,7,7,512,3,3,1,1
+```
+
+`--tags a,b` 选出同时带有所有标签的用例，`!tag` 排除某个标签，多次使用 `--tags` 取并集。`--shape OP:dims`（可重复）以临时用例代替用例文件，维度顺序与用例文件相同（也可用 `x` 分隔）；它们带有 `custom` 标签及自动标签，且不受 `--ops` 过滤。`--cases`、`--cases-file`、`--tags`、`--shape` 都会传给每个后端 runner，结果中记录每个用例的标签。
 
 旧 `--shapes '64,512,130'` 仅覆盖 GEMM，顺序仍为 **M,N,K**，与文件的 M K N 不同。`--reps` 覆盖每批次最少原生调用次数，`repeats` 是批次数。最低计时窗口仍有效，实际调用次数可以超过 reps；TVM evaluator 不暴露最终自适应次数，结果为 null。
+
+## 线程数
+
+`[benchmark].threads`（默认 1）或 `run.py --threads N` 统一设置所有后端的线程数：PyTorch intra-op 线程、OpenBLAS、TVM（`num-cores` 与 `TVM_NUM_THREADS`）、IREE（以 N 个 worker group 的 `local-task` 取代 `local-sync`）以及 MimIR。MimIR 在构建包含 `omp` 插件时（如 `mimir/mimir` 的 `feature/omp`）通过它并行（`mim -p omp`，kernel 以 `-fopenmp` 链接）；其他构建按原样运行，结果中记录 `mimir_parallel`。所有 `*_NUM_THREADS` 变量（`OMP`、`OPENBLAS`、`MKL`、`VECLIB`、`TVM`、`MIM`）使用同一数值。Linux 上多线程 runner 绑定到 `[benchmark].cpus` / `--cpus`，或从其 runner CPU 起的 N 个允许 CPU（优先每个物理核一个）；混合架构 CPU 请显式列出性能核。macOS 上 MimIR 链接 PyTorch 的 `libomp`，保证进程中只有一个 OpenMP 运行时。`--parallel` 要求每个 runner 单线程。
 
 ## 冻结权重 GEMM（`linear`）
 
@@ -124,13 +137,13 @@ conv2d  name N Cin H W Cout KH KW stride pad reps
 | OpenBLAS | 同样调用 `cblas_sgemm`；未导出 packed-GEMM 接口，每次调用打包 W |
 | TVM | `layout_free_buffers=[1]` 让 MetaSchedule 的 `RewriteLayout` 选择打包布局；`SplitLayoutRewritePreproc` 把变换拆为 `pack`，只运行一次（首次调用，含延迟加载） |
 | IREE | W 是从 `weights.irpa` 读取的不可变 `#stream.parameter.named<"model"::"w">` 全局量；const-expr hoisting 把 data-tiling 的 pack 移到模块初始化器中。`prepack_s` 为包含初始化器的模块加载时间，`iree-benchmark-module` 在计时前完成它 |
-| MimIR、mimir-par | 没有权重预打包。`linear_weight_layout = "kn"` 原样传入 W；`"nk"` 预先转置为 `[N,K]` 并收缩最后一维。M = 1 使用扁平的矩阵-向量形式，因为 MimIR 的形状推断会把 `«1, K»` 当作向量 |
+| MimIR | 没有权重预打包。`linear_weight_layout = "kn"` 原样传入 W；`"nk"` 预先转置为 `[N,K]` 并收缩最后一维。M = 1 使用扁平的矩阵-向量形式，因为 MimIR 的形状推断会把 `«1, K»` 当作向量 |
 
 `config/pytorch.toml` 中 `macos_blas = "openblas"` 通过 dyld interposer 把 PyTorch 从 Accelerate 导入的 BLAS（`sgemm_`、`sgemv_` 等）转到 OpenBLAS，使基线只使用 NEON CPU 核心而不是 AMX 协处理器；设为 `"accelerate"` 恢复 wheel 默认行为。结果中记录 `pytorch_blas` 以及每个用例被转发的调用次数。
 
 ## 评估 MimIR 版本
 
-`eval/mimir.toml` 指定 `[candidate]` 与 `[baseline]` 两个 MimIR（remote + ref）以及要运行的算子/用例。`mimir_eval.py` 在各自的持久 checkout（候选为 `build/mimir-par`，基线为 `build/mimir`）中构建两者，以 `--keep-going` 在同一核心上先后运行，并生成 `report.md` 与 `comparison.csv`：每个用例给出候选 GFLOPS / 基线 GFLOPS（> 1 表示候选更快）、两侧相对各自交错测得的 PyTorch 的加速比，以及每个算子的几何平均。失败的用例记为 FAIL 而不中止运行；候选有失败时命令以 1 退出。
+`eval/mimir.toml` 指定 `[candidate]` 与 `[baseline]` 两个 MimIR（remote + ref）以及要运行的算子/用例。`mimir_eval.py` 对每一侧以对应 remote/ref 运行一次 `mimir` 后端，各自使用独立的持久 checkout（`<build>/mimir-eval/{baseline,candidate}`），以 `--keep-going` 和 `[run].threads`（见[线程数](#线程数)）在同一组 CPU 上先后运行，并生成 `report.md` 与 `comparison.csv`：每个用例给出候选 GFLOPS / 基线 GFLOPS（> 1 表示候选更快）、两侧相对各自交错测得的 PyTorch 的加速比，以及每个算子的几何平均。失败的用例记为 FAIL 而不中止运行；候选有失败时命令以 1 退出。
 
 ```bash
 uv run --frozen python mimir_eval.py                                  # 使用已提交的配置
@@ -142,7 +155,7 @@ CI（`.github/workflows/mimir-eval.yml`）在 push 修改了 `eval/mimir.toml` �
 
 ## Benchmark 方式
 
-各后端使用相同 seed 的 FP32 输入和一个运行线程。Linux 严格绑定 CPU；macOS 使用下述 QoS 调度。公共 NumPy FP64 实现独立校验结果；Conv2D 参考通过滑动窗口 contraction 计算。预热后与 PyTorch 交替计时 9 个原生批次，每批默认至少 100 ms，取每调用均值的中位数。Python 调用、输入加载、编译、TVM 调优和 dump 不计入耗时。
+各后端使用相同 seed 的 FP32 输入和相同的线程数（默认 1）。Linux 严格绑定 CPU；macOS 使用下述 QoS 调度。公共 NumPy FP64 实现独立校验结果；Conv2D 参考通过滑动窗口 contraction 计算。预热后与 PyTorch 交替计时 9 个原生批次，每批默认至少 100 ms，取每调用均值的中位数。Python 调用、输入加载、编译、TVM 调优和 dump 不计入耗时。
 
 | 后端 | GEMM | GEMV | Conv2D | 计时范围 |
 |---|---|---|---|---|
@@ -167,7 +180,7 @@ trials = 64
 
 `--auto-tune` / `--no-auto-tune` 优先于子配置，对三种算子生效。`--trials` 单独使用不启用调优；没有选择 TVM 时不能指定其调优参数。开启时 MetaSchedule EvolutionarySearch + RandomModel 搜索实际算子 TIR；关闭时 LLVM 规则生成一次候选，直接使用第 0 个候选，不搜索、不变异。编译/调优时间单独记录。
 
-调优 builder 的 CPU 列表需要适配机器；候选测量和正式 benchmark 保持公共 CPU 单线程。不同模式、baseline 或编译器版本请使用新输出目录；已有结果的配置校验会阻止混用。
+调优 builder 的 CPU 列表需要适配机器；候选测量和正式 benchmark 在 runner 的 CPU 上使用 benchmark 线程数。不同模式、baseline 或编译器版本请使用新输出目录；已有结果的配置校验会阻止混用。
 
 ## 汇总和 dump
 

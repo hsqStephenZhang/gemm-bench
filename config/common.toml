@@ -6,6 +6,10 @@ device = "cpu"
 mcpu = "native" # Resolved once to the host LLVM CPU name (apple-m2, znver3, ...) for every backend.
 seed = 42
 dtype = "float32"
+# Threads per runner for every backend (PyTorch, OpenBLAS, TVM, IREE local-task, MimIR omp).
+# With threads > 1 a Linux runner is pinned to `cpus` (or that many allowed CPUs from its CPU on).
+threads = 1
+# cpus = [4, 6, 8, 10]
 ops = ["gemm", "gemv", "conv2d"]
 cases_files = ["config/gemm_cases.txt", "config/gemv_cases.txt", "config/conv2d_cases.txt", "config/linear_cases.txt"]
 # linear (frozen-weight GEMM) runs with --ops linear or --ops all.
@@ -13,6 +17,11 @@ default_reps = 1
 output_root = "results"
 parallel = false
 repeats = 9
+# Watchdog: a case (including its compilation and tuning) that runs longer exits with all
+# thread stacks dumped; raise it for long TVM tuning runs.
+case_timeout_s = 3600
+# Memory guard: a runner above this RSS records the case as failed and exits (0 = 60% of RAM).
+memory_limit_mb = 0
 min_repeat_ms = 100
 warmup = 5
 rtol = 0.001
@@ -25,7 +34,6 @@ atol = 0.001
 # iree = 4
 # openblas = 6
 # mimir = 8
-# mimir-par = 10
 
 [build]
 # Persistent compiler checkouts and incremental builds.
@@ -37,8 +45,6 @@ tvm = true
 iree = true
 openblas = true
 mimir = true
-# MimIR fork with blocked/packed contractions; same adapter as mimir.
-mimir-par = true
 
 [openblas]
 library = "auto" # Linux libopenblas.so; macOS Homebrew libopenblas.dylib.
@@ -47,14 +53,8 @@ compile_flags = ["-O3", "-shared", "-fPIC"]
 link_flags = ["-lopenblas"]
 
 [threads]
-OPENBLAS_NUM_THREADS = "1"
-OMP_NUM_THREADS = "1"
-VECLIB_MAXIMUM_THREADS = "1"
-TVM_NUM_THREADS = "1"
 # Keep the harness CPU pin; TVM must not rebind worker 0 to CPU 0.
 TVM_BIND_THREADS = "0"
-# MimIR runtime thread pool (mem.par_for); defaults to all performance cores.
-MIM_NUM_THREADS = "1"
 
 [artifacts]
 # CLI --dump / --no-dump override this setting.

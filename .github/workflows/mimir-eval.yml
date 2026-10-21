@@ -5,7 +5,7 @@
 # differences, noisy for small ones). For stable numbers register a self-hosted runner and set
 # repository variables:
 #   GEMM_BENCH_RUNS_ON = ["self-hosted","gemm-bench"]   (JSON labels)
-#   GEMM_BENCH_CPU     = 4                               (measurement CPU; keep its SMT sibling idle)
+#   GEMM_BENCH_CPU     = 4                               (first runner CPU; [run].threads CPUs are used from it)
 # This repository is public: the workflow deliberately has no pull_request trigger, so code from
 # forks never runs on a self-hosted machine.
 name: MimIR eval
@@ -30,6 +30,15 @@ on:
       cases:
         description: Override [run].cases (comma-separated names)
         required: false
+      threads:
+        description: Override [run].threads (threads for every backend)
+        required: false
+      tags:
+        description: Case tag selection, e.g. "gemm,irregular" (see run.py --list-cases)
+        required: false
+      shape:
+        description: Ad-hoc case instead of the case files, e.g. gemm:49,4608,512
+        required: false
 
 permissions:
   contents: read
@@ -50,12 +59,14 @@ jobs:
 
       - name: Install toolchain (GitHub-hosted)
         if: runner.environment == 'github-hosted'
-        # MimIR needs C++23 with gcc-15's libstdc++ (ubuntu-26.04) and clang for its LLVM runtime.
+        # MimIR needs C++23 with gcc-15's libstdc++ (ubuntu-26.04), clang for its LLVM runtime, and
+        # llvm-link + libomp for the omp plugin; LLVM 20's bin directory goes first on PATH.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang clang-20 ninja-build
-          echo "CC=clang-20" >> "$GITHUB_ENV"
-          echo "CXX=clang++-20" >> "$GITHUB_ENV"
+          sudo apt-get install -y clang-20 llvm-20 libomp-20-dev ninja-build
+          echo "/usr/lib/llvm-20/bin" >> "$GITHUB_PATH"
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - uses: astral-sh/setup-uv@v6
         with:
@@ -89,6 +100,9 @@ jobs:
           BASELINE_REF: ${{ inputs.baseline_ref }}
           OPS: ${{ inputs.ops }}
           CASES: ${{ inputs.cases }}
+          THREADS: ${{ inputs.threads }}
+          TAGS: ${{ inputs.tags }}
+          SHAPE: ${{ inputs.shape }}
           CPU: ${{ vars.GEMM_BENCH_CPU }}
         run: |
           args=(--output "$OUTPUT" --build-dir "$BUILD_DIR")
@@ -97,6 +111,9 @@ jobs:
           [ -n "$BASELINE_REF" ] && args+=(--baseline-ref "$BASELINE_REF")
           [ -n "$OPS" ] && args+=(--ops "$OPS")
           [ -n "$CASES" ] && args+=(--cases "$CASES")
+          [ -n "$THREADS" ] && args+=(--threads "$THREADS")
+          [ -n "$TAGS" ] && args+=(--tags "$TAGS")
+          [ -n "$SHAPE" ] && args+=(--shape "$SHAPE")
           [ -n "$CPU" ] && args+=(--cpu "$CPU")
           uv run --frozen python mimir_eval.py "${args[@]}"
 
@@ -115,7 +132,7 @@ jobs:
             ${{ env.OUTPUT }}/report.md
             ${{ env.OUTPUT }}/comparison.csv
             ${{ env.OUTPUT }}/summary.csv
-            ${{ env.OUTPUT }}/configs/
-            ${{ env.OUTPUT }}/*/results.json
-            ${{ env.OUTPUT }}/*/*/mimir_compile.log
+            ${{ env.OUTPUT }}/spec.json
+            ${{ env.OUTPUT }}/*/*/results.json
+            ${{ env.OUTPUT }}/*/*/*/mimir_compile.log
           if-no-files-found: warn

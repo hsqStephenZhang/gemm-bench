@@ -1,8 +1,15 @@
-# conv2d name N Cin H W Cout KH KW stride pad reps
+# conv2d name N Cin H W Cout KH KW stride pad reps [tags=family,...]
 # NCHW input, OIHW weight, groups=1, dilation=1, no bias, FP32 cross-correlation.
-conv2d conv_small 1 3 9 11 5 3 2 2 1 20
-conv2d conv_1x1 2 3 7 9 5 1 1 1 0 20
-conv2d r18_c1 2 64 56 56 64 3 3 1 1 10
-conv2d r18_1x1 2 64 56 56 256 1 1 1 0 10
-conv2d r18_s2 2 128 28 28 256 3 3 2 1 10
-conv2d vgg_c1 2 3 224 224 64 3 3 1 1 3
+conv2d conv_small 1 3 9 11 5 3 2 2 1 20 tags=tiny
+conv2d conv_1x1 2 3 7 9 5 1 1 1 0 20 tags=tiny
+conv2d conv_s16 1 16 16 16 16 3 3 1 1 200 tags=tiny
+conv2d r18_c1 2 64 56 56 64 3 3 1 1 10 tags=resnet
+conv2d r18_1x1 2 64 56 56 256 1 1 1 0 10 tags=resnet
+conv2d r18_s2 2 128 28 28 256 3 3 2 1 10 tags=resnet
+conv2d vgg_c1 2 3 224 224 64 3 3 1 1 3 tags=vgg
+# ResNet-50 stage 5: 7x7 outputs (49 pixels).
+conv2d r50_c5 1 512 7 7 512 3 3 1 1 20 tags=resnet,odd-m
+conv2d r50_1x1_c5 1 2048 7 7 512 1 1 1 0 20 tags=resnet,odd-m
+# Larger than last-level cache.
+conv2d vgg_c2 2 64 224 224 64 3 3 1 1 1 tags=vgg
+conv2d conv_big_odd 2 64 225 225 64 3 3 1 1 1 tags=prime

@@ -1,6 +1,4 @@
 [mimir]
-# Backend/runner name; also the checkout directory under the build root.
-name = "mimir"
 # GitHub owner/repo, HTTPS/SSH URL, or local Git remote.
 remote = "mimir/mimir"
 ref = "master"

@@ -3,6 +3,7 @@ variant = "data-tiling"
 backend = "llvm-cpu"
 driver = "local-sync"
 compiler_flags = ["--iree-opt-data-tiling=true", "--iree-llvmcpu-enable-ukernels=all"]
-# local-sync invokes kernels on the calling thread, without task workers.
+# local-sync invokes kernels on the calling thread, without task workers; with
+# benchmark.threads > 1 the adapter switches to local-task with that many worker groups.
 benchmark_flags = []
 dump_ir = true

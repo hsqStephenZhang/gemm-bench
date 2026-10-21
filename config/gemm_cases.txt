@@ -1,18 +1,29 @@
-# op    name          M     K     N       reps
+# op    name          M     K     N       reps  [tags=family,...]
 # GEMM: A[M,K] @ B[K,N] -> C[M,N]. reps is the minimum calls per timing batch.
-gemm    sq64          64    64    64      2000
-gemm    sq128         128   128   128     500
-gemm    sq256         256   256   256     100
-gemm    sq512         512   512   512     20
-gemm    sq1000        1000  1000  1000    5
-gemm    sq1024        1024  1024  1024    5
-gemm    skinny        8     2304  512     200
-gemm    pack          64    130   512     200
-gemm    k49           64    49    1024    200
-gemm    k147          64    147   1024    100
-gemm    k245          64    245   1024    100
-gemm    sq2000        2000  2000  2000    1
-gemm    sq2048        2048  2048  2048    1
-gemm    wide2048      64    2048  2048    5
-gemm    tall2048      2048  512   128     10
-gemm    odd2048       2049  2047  513     2
+# Size (small/medium/large) and regularity (regular/irregular/vector) tags are computed from the
+# shape; list cases and tags with `run.py --list-cases`, select with `--tags`.
+gemm    sq64          64    64    64      2000  tags=square
+gemm    sq128         128   128   128     500   tags=square
+gemm    sq256         256   256   256     100   tags=square
+gemm    sq512         512   512   512     20    tags=square
+gemm    sq1000        1000  1000  1000    5     tags=square
+gemm    sq1024        1024  1024  1024    5     tags=square
+gemm    skinny        8     2304  512     200   tags=skinny
+gemm    pack          64    130   512     200   tags=skinny
+gemm    k49           64    49    1024    200   tags=short-k
+gemm    k147          64    147   1024    100   tags=short-k
+gemm    k245          64    245   1024    100   tags=short-k
+gemm    sq2000        2000  2000  2000    1     tags=square
+gemm    sq2048        2048  2048  2048    1     tags=square
+gemm    wide2048      64    2048  2048    5     tags=skinny
+gemm    tall2048      2048  512   128     10    tags=tall
+gemm    odd2048       2049  2047  513     2     tags=prime
+# Irregular M from real networks: ResNet-50 stage 5 runs on 7x7 = 49 output pixels (im2col M).
+gemm    m49_k4608     49    4608  512     20    tags=resnet,odd-m
+gemm    m49_k512      49    512   2048    50    tags=resnet,odd-m
+# Rows below one 8-row block, all-prime moderate shapes, a 1000-class head (N % 16 = 8),
+# and a large all-odd shape.
+gemm    m7_k1024      7     1024  1024    200   tags=odd-m
+gemm    m97_n257      97    383   257     200   tags=prime,odd-m
+gemm    n1000         256   2048  1000    10    tags=classifier
+gemm    big_odd       1999  4095  2047    1     tags=prime

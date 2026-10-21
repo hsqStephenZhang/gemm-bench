@@ -1,7 +1,6 @@
 [pytorch]
 # Native eager ATen: mm.out, mv.out, convolution (no bias, groups=1, dilation=1).
 variant = "eager-native"
-intraop_threads = 1
 interop_threads = 1
 compiler = "c++"
 compile_flags = ["-O3", "-shared", "-fPIC", "-std=c++20"]

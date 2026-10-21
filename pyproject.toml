@@ -36,3 +36,6 @@ explicit = true
 
 [tool.ty.environment]
 python = ".venv"
+
+[tool.ruff]
+extend-exclude = ["build", "results"]

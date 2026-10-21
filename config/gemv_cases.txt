@@ -1,11 +1,15 @@
-# gemv name M K reps: A[M,K] @ x[K] -> y[M]
-gemv mv64 64 64 2000
-gemv mv128 128 128 500
-gemv mv256 256 256 100
-gemv mv512 512 512 20
-gemv mv1000 1000 1000 5
-gemv mv1024 1024 1024 5
-gemv mv2048 2048 2048 2
-gemv mv_skinny 8 2304 200
-gemv mv_odd 513 2047 10
-gemv mv_pack 64 130 200
+# gemv name M K reps [tags=family,...]: A[M,K] @ x[K] -> y[M]
+gemv mv64 64 64 2000 tags=square
+gemv mv128 128 128 500 tags=square
+gemv mv256 256 256 100 tags=square
+gemv mv512 512 512 20 tags=square
+gemv mv1000 1000 1000 5 tags=square
+gemv mv1024 1024 1024 5 tags=square
+gemv mv2048 2048 2048 2 tags=square
+gemv mv_skinny 8 2304 200 tags=skinny
+gemv mv_odd 513 2047 10 tags=prime
+gemv mv_pack 64 130 200 tags=skinny
+gemv mv49 49 4608 200 tags=resnet,odd-m
+# Larger than last-level cache: memory-bandwidth bound.
+gemv mv4096 4096 4096 2 tags=square
+gemv mv_big_odd 4097 4095 2 tags=prime
