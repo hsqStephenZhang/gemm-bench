@@ -58,6 +58,11 @@ def main():
     parser.add_argument(
         "--pytorch-config", type=Path, default=ROOT / "config/pytorch.toml"
     )
+    parser.add_argument(
+        "--pytorch-mode",
+        choices=["eager", "inductor"],
+        help="Measured PyTorch mode; paired baselines remain eager",
+    )
     parser.add_argument("--device", choices=["cpu", "gpu"])
     parser.add_argument("--shapes")
     parser.add_argument("--ops", help="gemm,gemv,conv2d or all")
@@ -259,6 +264,8 @@ def main():
                 command.extend(["--build-dir", str(args.build_dir.resolve())])
         if backend == "pytorch":
             command.extend(["--config", str(args.pytorch_config.resolve())])
+            if args.pytorch_mode is not None:
+                command.extend(["--pytorch-mode", args.pytorch_mode])
         if backend == "iree":
             command.extend(["--config", str(args.iree_config.resolve())])
         if backend != "openblas":

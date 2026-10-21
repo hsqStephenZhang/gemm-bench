@@ -11,7 +11,6 @@ import time
 
 import numpy as np
 
-from common.config import ROOT
 from common.operators import tensor_shapes
 from common.runner import run
 from mimir.operators import module

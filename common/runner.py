@@ -1,3 +1,4 @@
+from copy import deepcopy
 import csv
 import faulthandler
 import json
@@ -106,13 +107,23 @@ def run(backend, factory=None):
         if backend == "pytorch"
         else load(os.environ.get("GEMM_PYTORCH_CONFIG", ROOT / "config/pytorch.toml"))
     )
+    # The paired baseline is always eager PyTorch; a measured Inductor mode runs as the adapter.
+    baseline_settings = deepcopy(baseline_settings)
+    baseline_settings["pytorch"]["mode"] = "eager"
     baseline = PyTorch(config, baseline_settings)
+    compiled_pytorch = (
+        backend == "pytorch" and settings["pytorch"].get("mode", "eager") == "inductor"
+    )
     if backend == "openblas":
         from .openblas import OpenBLAS
 
         adapter = OpenBLAS(config, output)
     else:
-        adapter = factory(config, settings) if backend != "pytorch" else None
+        adapter = (
+            factory(config, settings)
+            if backend != "pytorch" or compiled_pytorch
+            else None
+        )
     cpu = cpu_model()
     metadata = dict(
         backend=backend,

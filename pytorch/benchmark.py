@@ -22,7 +22,9 @@ def configure(settings, threads=1):
     if settings["interop_threads"] != 1:
         raise ValueError("The CPU comparison uses one inter-op thread")
     torch.set_num_threads(threads)
-    torch.set_num_interop_threads(settings["interop_threads"])
+    # Inter-op threads can be set only once per process; the measured and baseline adapters both call this.
+    if torch.get_num_interop_threads() != settings["interop_threads"]:
+        torch.set_num_interop_threads(settings["interop_threads"])
     assert torch.get_num_threads() == threads and torch.get_num_interop_threads() == 1
 
 
@@ -33,7 +35,10 @@ def metadata(settings):
         pytorch_threads=torch.get_num_threads(),
         pytorch_interop_threads=torch.get_num_interop_threads(),
         pytorch_cpu_capability=torch.backends.cpu.get_cpu_capability(),
-        variant=settings["variant"],
+        variant="inductor-aoti"
+        if settings.get("mode", "eager") == "inductor"
+        else settings["variant"],
+        mode=settings.get("mode", "eager"),
     )
 
 
@@ -44,9 +49,13 @@ class PyTorch:
         self.settings = settings["pytorch"]
         if self.settings["variant"] not in ["eager-mm-out", "eager-native"]:
             raise ValueError("Only eager-native is implemented")
+        self.mode = self.settings.get("mode", "eager")
+        if self.mode not in ["eager", "inductor"]:
+            raise ValueError("pytorch.mode must be eager or inductor")
         # May re-exec this process under the Accelerate -> OpenBLAS interposer.
         blas_metadata = blas.activate(config, self.settings)
-        configure(self.settings, config["benchmark"]["threads"])
+        self.threads = config["benchmark"]["threads"]
+        configure(self.settings, self.threads)
         self.metadata = dict(metadata(self.settings), **blas_metadata)
         self.library = None
         self.artifacts = config.get("artifacts", {})
@@ -95,8 +104,14 @@ class PyTorch:
         self.library.last_error.restype = ctypes.c_char_p
 
     def prepare(self, case, a, b, work, previous):
-        if self.library is None:
+        if self.library is None and self.mode == "eager":
             self.build_timer(work.parent)
+        if self.mode == "inductor":
+            from pytorch.inductor import Kernel as InductorKernel
+
+            return InductorKernel(
+                self.settings, case, a, b, work, self.artifacts, threads=self.threads
+            )
         kernel = Kernel(
             self.library, case, a, b, self.build_s, self.timer_output, self.artifacts
         )

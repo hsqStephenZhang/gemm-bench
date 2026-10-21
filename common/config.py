@@ -168,7 +168,15 @@ def parse_args(backend):
         parser.add_argument(
             "--trials", type=int, default=settings["tvm"]["auto_tune"]["trials"]
         )
+    if backend == "pytorch":
+        parser.add_argument(
+            "--pytorch-mode",
+            choices=["eager", "inductor"],
+            default=settings["pytorch"].get("mode", "eager"),
+        )
     args = parser.parse_args()
+    if backend == "pytorch":
+        settings["pytorch"]["mode"] = args.pytorch_mode
     config["build"] = {"directory": str(args.build_dir.resolve())}
     allowed_cpus = available_cpus()
     args.cpu = resolve_runner_cpus(

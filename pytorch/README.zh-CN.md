@@ -24,3 +24,15 @@ uv run --frozen python pytorch/run.py --ops conv2d --cases conv_small \
 Dump 位于统一入口 `<output>/pytorch/artifacts/<operator_dims>/`。文件包括 `native_timer.cpp`、`pytorch_timer.so`、编译命令/日志、`operator.txt`、`dispatch_table.txt`、`timer_wrapper.s`、PyTorch 构建/依赖库信息、精确输入、结果和 SHA256 清单。`operator.txt` 随算子选择 mm.out / mv.out / convolution。汇编是包装器反汇编，实际 ATen 内核位于预编译库中。
 
 公共配置、用例格式和选择参数见[项目 README](../README.zh-CN.md)。
+
+## PyTorch 两种模式
+
+`[pytorch].mode` 支持 `"eager"`（默认）和 `"inductor"`；CLI `--pytorch-mode` 优先于配置，也可使用 `config/pytorch-inductor.toml`。即使测量 PyTorch Inductor，配对 baseline 仍保持 eager。
+
+```bash
+uv run --frozen python run.py --backends none --pytorch-mode inductor \
+  --ops all --cpu 0 --dump --output results/pytorch-inductor
+uv run --frozen python pytorch/run.py --pytorch-mode eager --cases pack
+```
+
+Inductor 路径为 `torch.export.export` → `torch._inductor.aoti_compile_and_package` → C++ `AOTIModelPackageLoader::run`，使用[官方 AOTInductor 部署接口](https://docs.pytorch.org/docs/stable/torch.compiler_aot_inductor.html)。这是 CPU Inductor 编译图的原生调用，不是计时 Python `torch.compile` callable，计时循环没有 Python 调用。输入是运行时参数，不冻结 weight。计时包含图调用、输出分配及内部 packing，排除编译、图导出和正确性拷贝。默认 `max_autotune=false`、`cpp.threads=1`；编译失败直接报错，不退回 eager。`--dump` 保存导出模型、FX 图、实际测量的 `.pt2` 包、生成 C++/动态库及原生计时 wrapper。两种模式使用独立输出目录。

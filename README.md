@@ -204,3 +204,32 @@ uv run --frozen python -m unittest discover -s tests -v
 ```
 
 Default CPU optimization: TVM uses `[tvm].schedule = "llvm"`: one fixed-seed generation with `ms.ScheduleRule.create("llvm")`, `mutator_probs={}`, no search strategy or cost model, and direct selection of candidate 0. Target-selected postprocessing finalizes annotations, matching the default-rule experiment. Rejected candidate 0 fails; it never silently switches to a different candidate. AutoTune overrides this mode when enabled. DLight and naive remain explicit alternatives. IREE defaults to DT + `ukernels=all`; `config/iree-default.toml` preserves the unmodified compiler pipeline.
+
+## Visualize benchmark results
+
+`plot.py` uses matplotlib from the shared uv environment. Pass the output directory or its long-form `summary.csv`:
+
+```bash
+uv sync --locked
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012
+# Absolute latency instead of throughput
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012 --absolute latency
+# Filter operators/backends and export PDF with a linear axis
+uv run --frozen python plot.py results/full-cpu-llvm-default-dt-20261012 \
+  --ops gemm,gemv,conv --backends pytorch,tvm,iree --scale linear \
+  --formats png,pdf --output results/selected-plots
+```
+
+Default outputs are a six-panel overview plus individual GEMM/GEMV/Conv2D figures in `<input directory>/plots/`, as PNG and SVG. Left panels show GFLOP/s (higher is better), or latency in ms (lower is better); right panels show paired-baseline speedup (higher is better), with a dashed 1× reference. Logarithmic axes are the default; `--scale linear` changes both columns. Speedups use the recorded same-core baseline rather than the standalone PyTorch column. Legends retain backend variants and CPU IDs; axes retain case dimensions (`--no-shapes` hides them). Missing results leave gaps, and duplicate or inconsistent rows fail validation. Plot metadata records the source CSV hash. Compilation, packing, allocation and invocation scope differences remain those recorded in the benchmark results.
+
+## PyTorch modes
+
+`[pytorch].mode` supports `"eager"` (default) and `"inductor"`. CLI `--pytorch-mode` overrides the configuration; `config/pytorch-inductor.toml` is also provided. Paired baselines always use eager, even when the measured PyTorch runner uses Inductor.
+
+```bash
+uv run --frozen python run.py --backends none --pytorch-mode inductor \
+  --ops all --cpu 0 --dump --output results/pytorch-inductor
+uv run --frozen python pytorch/run.py --pytorch-mode eager --cases pack
+```
+
+Inductor uses `torch.export.export` → `torch._inductor.aoti_compile_and_package` → native C++ `AOTIModelPackageLoader::run`. It measures CPU Inductor compiled graphs with no Python calls in the timing loop, using the [official AOTInductor deployment path](https://docs.pytorch.org/docs/stable/torch.compiler_aot_inductor.html). This is AOTInductor native invocation rather than timing a Python `torch.compile` callable. Inputs are runtime arguments, not constant weights. Output allocation, graph invocation and internal packing are included; compilation, graph export and correctness copies are excluded. Default `max_autotune=false`, `cpp.threads=1`; compilation errors stop the run rather than falling back to eager. `--dump` retains the exported program, FX graph, measured `.pt2` package, generated C++/shared libraries and native timer wrapper. Inductor and eager results need separate output directories.
